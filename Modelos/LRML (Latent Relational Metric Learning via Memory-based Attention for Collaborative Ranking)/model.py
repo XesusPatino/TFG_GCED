@@ -3,6 +3,7 @@ tf.compat.v1.disable_eager_execution()
 import pandas as pd
 from sklearn.model_selection import train_test_split
 import random
+from codecarbon import EmissionsTracker  # Importar CodeCarbon
 
 class LRML:
     def __init__(self, num_users, num_items, args, mode=1):
@@ -216,6 +217,10 @@ num_users = len(user_ids)
 num_items = len(item_ids)
 model = LRML(num_users, num_items, args)
 
+# Iniciar el tracker de CodeCarbon
+tracker = EmissionsTracker()  # Crear un tracker de emisiones
+tracker.start()  # Iniciar el seguimiento
+
 # Entrenar el modelo
 with tf.compat.v1.Session(graph=model.graph) as sess:
     sess.run(tf.compat.v1.global_variables_initializer())
@@ -230,3 +235,6 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
         feed_dict, _ = model.get_feed_dict(train_data, neg_batch, mode='training')
         _, loss = sess.run([model.train_op, model.cost], feed_dict=feed_dict)
         print(f'Epoch {epoch + 1}, Loss: {loss}')
+
+# Detener el tracker de CodeCarbon
+tracker.stop()  # Detener el seguimiento y generar el informe
