@@ -1,13 +1,14 @@
 import argparse
 import numpy as np
 
-RATING_FILE_NAME = dict({'movie': 'ratings.csv', 'book': 'BX-Book-Ratings.csv', 'music': 'user_artists.dat'})
-SEP = dict({'movie': ',', 'book': ';', 'music': '\t'})
+# Actualizar para ML-1M
+RATING_FILE_NAME = dict({'movie': 'ratings.dat', 'book': 'BX-Book-Ratings.csv', 'music': 'user_artists.dat'})
+SEP = dict({'movie': '::', 'book': ';', 'music': '\t'})
 THRESHOLD = dict({'movie': 4, 'book': 0, 'music': 0})
 
 
 def read_item_index_to_entity_id_file():
-    file = 'C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/item_index2entity_id.txt'
+    file = 'C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/item_index2entity_id.txt'
     print('reading item index to entity id file: ' + file + ' ...')
     i = 0
     for line in open(file, encoding='utf-8').readlines():
@@ -19,28 +20,37 @@ def read_item_index_to_entity_id_file():
 
 
 def convert_rating():
-    file = 'C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/' + RATING_FILE_NAME[DATASET]
+    file = 'C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/' + RATING_FILE_NAME[DATASET]
 
     print('reading rating file ...')
     item_set = set(item_index_old2new.values())
     user_pos_ratings = dict()
     user_neg_ratings = dict()
 
-    for line in open(file, encoding='utf-8').readlines()[1:]:
+    # Para ML-1M no necesitamos saltar la primera línea ya que no tiene encabezado
+    start_line = 0 if DATASET == 'movie' else 1
+    
+    for line in open(file, encoding='utf-8').readlines()[start_line:]:
         array = line.strip().split(SEP[DATASET])
 
         # remove prefix and suffix quotation marks for BX dataset
         if DATASET == 'book':
             array = list(map(lambda x: x[1:-1], array))
 
-        item_index_old = array[1]
+        # Para ML-1M, los índices son diferentes
+        if DATASET == 'movie':
+            user_index_old = int(array[0])
+            item_index_old = array[1]
+            rating = float(array[2])
+        else:
+            user_index_old = int(array[0])
+            item_index_old = array[1]
+            rating = float(array[2])
+
         if item_index_old not in item_index_old2new:  # the item is not in the final item set
             continue
         item_index = item_index_old2new[item_index_old]
 
-        user_index_old = int(array[0])
-
-        rating = float(array[2])
         if rating >= THRESHOLD[DATASET]:
             if user_index_old not in user_pos_ratings:
                 user_pos_ratings[user_index_old] = set()
@@ -51,7 +61,7 @@ def convert_rating():
             user_neg_ratings[user_index_old].add(item_index)
 
     print('converting rating file ...')
-    writer = open('C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/ratings_final.txt', 'w', encoding='utf-8')
+    writer = open('C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/ratings_final.txt', 'w', encoding='utf-8')
     user_cnt = 0
     user_index_old2new = dict()
     for user_index_old, pos_item_set in user_pos_ratings.items():
@@ -65,8 +75,15 @@ def convert_rating():
         unwatched_set = item_set - pos_item_set
         if user_index_old in user_neg_ratings:
             unwatched_set -= user_neg_ratings[user_index_old]
-        for item in np.random.choice(list(unwatched_set), size=len(pos_item_set), replace=False):
-            writer.write('%d\t%d\t0\n' % (user_index, item))
+        # Si hay suficientes elementos no vistos, elegimos tantos como positivos hay
+        if len(unwatched_set) >= len(pos_item_set):
+            for item in np.random.choice(list(unwatched_set), size=len(pos_item_set), replace=False):
+                writer.write('%d\t%d\t0\n' % (user_index, item))
+        else:
+            # Si no hay suficientes, usamos todos los que hay (con reemplazo si es necesario)
+            for item in np.random.choice(list(unwatched_set), size=len(pos_item_set), replace=True):
+                writer.write('%d\t%d\t0\n' % (user_index, item))
+    
     writer.close()
     print('number of users: %d' % user_cnt)
     print('number of items: %d' % len(item_set))
@@ -77,8 +94,8 @@ def convert_kg():
     entity_cnt = len(entity_id2index)
     relation_cnt = 0
 
-    writer = open('C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/kg_final.txt', 'w', encoding='utf-8')
-    for line in open('C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/kg.txt', encoding='utf-8'):
+    writer = open('C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/kg_final.txt', 'w', encoding='utf-8')
+    for line in open('C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/kg.txt', encoding='utf-8'):
         array = line.strip().split('\t')
         head_old = array[0]
         relation_old = array[1]

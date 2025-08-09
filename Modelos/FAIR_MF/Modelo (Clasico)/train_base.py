@@ -1,0 +1,501 @@
+import os
+import time
+import numpy as np
+import pytorch_lightning as pl
+from pytorch_lightning.callbacks import Callback
+from torchmetrics.retrieval import RetrievalRecall, RetrievalNormalizedDCG
+import torch
+import psutil
+from codecarbon import EmissionsTracker
+import pandas as pd
+from os import path
+import mf
+import mf_with_fair_pretraining as mf_fair
+from data import datamodule
+from argparse import ArgumentParser
+import fairness_metrics as fairness
+import matplotlib.pyplot as plt
+import logging
+
+logging.getLogger("pytorch_lightning.utilities.distributed").setLevel(logging.WARNING)
+logging.getLogger("pytorch_lightning.accelerators.gpu").setLevel(logging.WARNING)
+
+DATA_DIR = "C:/Users/xpati/Documents/TFG/Data_Fair_MF"
+
+# Create command line arguments
+args = ArgumentParser()
+args.add_argument("--d", type=int, default=256)
+args.add_argument("--dataset", type=str)
+args.add_argument("--split", type=int)
+args = args.parse_args()
+
+EMBEDDING_DIM = args.d
+DATASET = args.dataset
+SPLIT = args.split
+
+class SystemMetricsCallback(Callback):
+    def __init__(self):
+        super().__init__()
+        self.start_time = None
+        self.train_metrics = []
+        self.test_metrics = []
+        self.current_epoch_metrics = {}
+        
+    def on_train_start(self, trainer, pl_module):
+        self.start_time = time.time()
+        self.train_start_time = time.time()
+        
+    def on_train_epoch_start(self, trainer, pl_module):
+        self.epoch_start_time = time.time()
+        self.current_epoch_metrics = {
+            'epoch': trainer.current_epoch,
+            'memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
+            'cpu_usage_percent': psutil.cpu_percent(),
+        }
+        
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+            self.current_epoch_metrics['gpu_usage_mb'] = 0
+    
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        """Simplificado para no requerir dataloader_idx"""
+        if torch.cuda.is_available():
+            self.current_epoch_metrics['gpu_usage_mb'] = max(
+                self.current_epoch_metrics.get('gpu_usage_mb', 0),
+                torch.cuda.max_memory_allocated() / 1024 ** 2
+            )
+    
+    def on_train_epoch_end(self, trainer, pl_module):
+        self.current_epoch_metrics['epoch_time_sec'] = time.time() - self.epoch_start_time
+        self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Log metrics
+        metrics_to_log = {
+            'time/epoch_time_sec': self.current_epoch_metrics['epoch_time_sec'],
+            'memory/memory_usage_mb': self.current_epoch_metrics['memory_usage_mb'],
+            'cpu/cpu_usage_percent': self.current_epoch_metrics['cpu_usage_percent'],
+        }
+        
+        if 'gpu_usage_mb' in self.current_epoch_metrics:
+            metrics_to_log['gpu/gpu_usage_mb'] = self.current_epoch_metrics['gpu_usage_mb']
+        
+        pl_module.log_dict(metrics_to_log)
+        
+        # Print epoch summary
+        print(f"\nEpoch {self.current_epoch_metrics['epoch']} Metrics:")
+        print(f"  Time: {self.current_epoch_metrics['epoch_time_sec']:.2f}s")
+        print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
+        print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
+        if 'gpu_usage_mb' in self.current_epoch_metrics:
+            print(f"  GPU: {self.current_epoch_metrics['gpu_usage_mb']:.2f}MB")
+    
+    def on_test_start(self, trainer, pl_module):
+        self.test_start_time = time.time()
+        self.all_preds = []
+        self.all_targets = []
+        self.all_indexes = []
+    
+    def on_test_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        """Mantener dataloader_idx como opcional para compatibilidad"""
+        user_ids, item_ids, ratings, _ = batch
+        preds = pl_module(user_ids, item_ids)
+        
+        self.all_preds.append(preds)
+        self.all_targets.append(ratings)
+        self.all_indexes.append(user_ids)
+    
+    def on_test_end(self, trainer, pl_module):
+        test_time = time.time() - self.test_start_time
+        total_time = time.time() - self.train_start_time
+        
+        # Calculate recommendation metrics
+        preds = torch.cat(self.all_preds)
+        targets = torch.cat(self.all_targets)
+        indexes = torch.cat(self.all_indexes)
+        
+        # Convert ratings to binary relevance (1 if rating >= threshold, else 0)
+        threshold = 3.0  # Example threshold for 1-5 rating scale
+        binary_targets = (targets >= threshold).float()
+        
+        # Create metric instances
+        recall_at_10 = RetrievalRecall(top_k=10)
+        recall_at_50 = RetrievalRecall(top_k=50)
+        ndcg_at_10 = RetrievalNormalizedDCG(top_k=10)
+        ndcg_at_50 = RetrievalNormalizedDCG(top_k=50)
+        
+        # Calculate metrics
+        recall_10 = recall_at_10(preds, binary_targets, indexes=indexes)
+        recall_50 = recall_at_50(preds, binary_targets, indexes=indexes)
+        ndcg_10 = ndcg_at_10(preds, targets, indexes=indexes)
+        ndcg_50 = ndcg_at_50(preds, targets, indexes=indexes)
+        
+        # Final system metrics
+        final_metrics = {
+            'time/total_time_sec': total_time,
+            'time/test_time_sec': test_time,
+            'memory/final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
+            'cpu/final_cpu_usage_percent': psutil.cpu_percent(),
+            'metrics/recall@10': recall_10.item(),
+            'metrics/recall@50': recall_50.item(),
+            'metrics/ndcg@10': ndcg_10.item(),
+            'metrics/ndcg@50': ndcg_50.item(),
+        }
+        
+        if torch.cuda.is_available():
+            final_metrics['gpu/final_gpu_usage_mb'] = torch.cuda.max_memory_allocated() / 1024 ** 2
+        
+        # Log metrics directly to the logger instead of using pl_module.log_dict()
+        if trainer.logger:
+            for metric_name, metric_value in final_metrics.items():
+                trainer.logger.experiment.add_scalar(metric_name, metric_value)
+        
+        self.test_metrics.append(final_metrics)
+        
+        # Print final summary
+        print("\n=== Final Training Metrics ===")
+        for m in self.train_metrics:
+            print(f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, "
+                  f"Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%", 
+                  end='')
+            if 'gpu_usage_mb' in m:
+                print(f", GPU={m['gpu_usage_mb']:.2f}MB")
+            else:
+                print()
+        
+        print("\n=== Final Test Metrics ===")
+        print(f"Total Time: {total_time:.2f}s (Test: {test_time:.2f}s)")
+        print(f"Final Memory: {final_metrics['memory/final_memory_usage_mb']:.2f}MB")
+        print(f"Final CPU: {final_metrics['cpu/final_cpu_usage_percent']:.1f}%")
+        if 'gpu/final_gpu_usage_mb' in final_metrics:
+            print(f"Final GPU: {final_metrics['gpu/final_gpu_usage_mb']:.2f}MB")
+        print(f"Recall@10: {recall_10:.4f}")
+        print(f"Recall@50: {recall_50:.4f}")
+        print(f"NDCG@10: {ndcg_10:.4f}")
+        print(f"NDCG@50: {ndcg_50:.4f}")
+
+
+
+class EmissionsPerEpochCallback(Callback):
+    def __init__(self):
+        super().__init__()
+        self.emission_rmse_pairs = []
+        self.trackers = {}
+        self.epoch_emissions = []      # Emisiones por época
+        self.cumulative_emissions = [] # Emisiones acumulativas
+        self.epoch_rmse = []           # RMSE por época
+        self.total_emissions = 0.0     # Contador de emisiones totales
+        
+    def on_train_start(self, trainer, pl_module):
+        # Crear directorio para emisiones si no existe
+        os.makedirs('emissions_reports', exist_ok=True)
+        os.makedirs('emissions_plots', exist_ok=True)
+        
+        # Inicializar tracker general
+        self.main_tracker = EmissionsTracker(
+            project_name=f"MF_{DATASET}_split{SPLIT}_total",
+            output_dir="emissions_reports",
+            save_to_file=True,
+            log_level="error",
+            allow_multiple_runs=True
+        )
+        try:
+            self.main_tracker.start()
+        except Exception as e:
+            print(f"Advertencia: No se pudo iniciar el tracker principal: {e}")
+            self.main_tracker = None
+        
+    def on_train_epoch_start(self, trainer, pl_module):
+        # Usar un nombre único para cada tracker y permitir múltiples ejecuciones
+        epoch = trainer.current_epoch
+        self.trackers[epoch] = EmissionsTracker(
+            project_name=f"MF_{DATASET}_split{SPLIT}_epoch{epoch}",
+            output_dir="emissions_reports",
+            save_to_file=True,
+            log_level="error",
+            allow_multiple_runs=True
+        )
+        try:
+            self.trackers[epoch].start()
+        except Exception as e:
+            print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
+            self.trackers[epoch] = None
+        
+    def on_train_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        
+        try:
+            # Obtener emisiones de esta época
+            epoch_co2 = 0.0
+            if epoch in self.trackers and self.trackers[epoch]:
+                try:
+                    epoch_co2 = self.trackers[epoch].stop() or 0.0
+                except Exception as e:
+                    print(f"Advertencia: Error al detener el tracker para la época {epoch}: {e}")
+                    epoch_co2 = 0.0
+            
+            # Acumular emisiones totales
+            self.total_emissions += epoch_co2
+            
+            # Obtener RMSE actual (asegurarse de que sea un número Python)
+            current_rmse = trainer.callback_metrics.get("val_rmse", torch.tensor(0.0)).item()
+            
+            # Guardar datos de esta época
+            self.epoch_emissions.append(epoch_co2)
+            self.cumulative_emissions.append(self.total_emissions)
+            self.epoch_rmse.append(current_rmse)
+            self.emission_rmse_pairs.append((self.total_emissions, current_rmse))  # Ahora guardamos emisiones acumulativas
+            
+            # Registrar métricas (asegurarse de que no sean None)
+            pl_module.log_dict({
+                'environment/epoch_emissions_kg': float(epoch_co2),
+                'environment/cumulative_emissions_kg': float(self.total_emissions)
+            })
+            
+            print(f"Epoch {epoch} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg, RMSE: {current_rmse:.4f}")
+        except Exception as e:
+            print(f"Error al medir emisiones en época {epoch}: {e}")
+    
+    def on_train_end(self, trainer, pl_module):
+        try:
+            # Detener el tracker principal
+            if hasattr(self, 'main_tracker') and self.main_tracker:
+                try:
+                    self.main_tracker.stop()
+                except Exception as e:
+                    print(f"Error al detener el tracker principal: {e}")
+            
+            # Asegurarse de que todos los trackers estén detenidos
+            for epoch, tracker in self.trackers.items():
+                if tracker is not None:
+                    try:
+                        tracker.stop()
+                    except:
+                        pass
+            
+            # Si no hay datos, salir
+            if not self.emission_rmse_pairs:
+                print("No hay datos de emisiones para graficar")
+                return
+            
+            # Crear dataframe con todos los datos
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            df = pd.DataFrame({
+                'epoch': range(len(self.epoch_emissions)),
+                'epoch_emissions_kg': self.epoch_emissions,
+                'cumulative_emissions_kg': self.cumulative_emissions,
+                'rmse': self.epoch_rmse
+            })
+            df.to_csv(f'emissions_reports/emissions_metrics_{DATASET}_split{SPLIT}_{timestamp}.csv', index=False)
+            
+            # Graficar las relaciones
+            self.plot_emissions_vs_metrics(timestamp)
+            
+        except Exception as e:
+            print(f"Error al generar gráficos de emisiones: {e}")
+            
+    def plot_emissions_vs_metrics(self, timestamp):
+        """Genera gráficos para emisiones vs métricas"""
+        
+        # 1. Emisiones acumulativas vs RMSE
+        plt.figure(figsize=(10, 6))
+        plt.plot(self.cumulative_emissions, self.epoch_rmse, 'b-', marker='o')
+        
+        # Añadir etiquetas con el número de época
+        for i, (emissions, rmse) in enumerate(zip(self.cumulative_emissions, self.epoch_rmse)):
+            plt.annotate(f"{i}", (emissions, rmse), textcoords="offset points", 
+                        xytext=(0,10), ha='center', fontsize=9)
+            
+        plt.xlabel('Emisiones de CO2 acumuladas (kg)')
+        plt.ylabel('RMSE')
+        plt.title('Relación entre Emisiones Acumuladas y RMSE')
+        plt.grid(True, alpha=0.3)
+        plt.savefig(f'emissions_plots/cumulative_emissions_vs_rmse_{DATASET}_split{SPLIT}_{timestamp}.png')
+        plt.close()
+        
+        # 2. Gráfico combinado: Emisiones por época y acumulativas
+        plt.figure(figsize=(12, 10))
+        plt.subplot(2, 2, 1)
+        plt.plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
+        plt.title('Emisiones por Época')
+        plt.xlabel('Época')
+        plt.ylabel('CO2 Emissions (kg)')
+        
+        plt.subplot(2, 2, 2)
+        plt.plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
+        plt.title('Emisiones Acumuladas por Época')
+        plt.xlabel('Época')
+        plt.ylabel('CO2 Emissions (kg)')
+        
+        plt.subplot(2, 2, 3)
+        plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
+        plt.title('RMSE por Época')
+        plt.xlabel('Época')
+        plt.ylabel('RMSE')
+        
+        plt.subplot(2, 2, 4)
+        plt.plot(self.cumulative_emissions, self.epoch_rmse, 'g-', marker='o')
+        plt.title('RMSE vs Emisiones Acumuladas')
+        plt.xlabel('Emisiones Acumuladas (kg)')
+        plt.ylabel('RMSE')
+        
+        plt.tight_layout()
+        plt.savefig(f'emissions_plots/metrics_by_epoch_{DATASET}_split{SPLIT}_{timestamp}.png')
+        plt.close()
+        
+        # 3. Scatter plot de rendimiento frente a emisiones acumulativas
+        plt.figure(figsize=(10, 6))
+        
+        # Ajustar tamaño de los puntos según la época
+        sizes = [(i+1)*20 for i in range(len(self.cumulative_emissions))]
+        
+        scatter = plt.scatter(self.epoch_rmse, self.cumulative_emissions, 
+                    color='blue', marker='o', s=sizes, alpha=0.7)
+        
+        # Añadir etiquetas de época
+        for i, (rmse, em) in enumerate(zip(self.epoch_rmse, self.cumulative_emissions)):
+            plt.annotate(f"{i}", (rmse, em), textcoords="offset points", 
+                        xytext=(0,5), ha='center', fontsize=9)
+        
+        plt.ylabel('Emisiones de CO2 acumuladas (kg)')
+        plt.xlabel('RMSE')
+        plt.title('Relación entre RMSE y Emisiones Acumuladas')
+        plt.grid(True, alpha=0.3)
+        
+        plt.savefig(f'emissions_plots/cumulative_emissions_performance_scatter_{DATASET}_split{SPLIT}_{timestamp}.png')
+        plt.close()     
+
+
+def train_MF(
+    dataset_name=DATASET,
+    embedding_dim=EMBEDDING_DIM,
+    batch_size=2**12,
+    num_workers=4,
+    l2_reg=1e-2,
+    learning_rate=5e-4,
+    verbose=1,
+    fair=0,
+):
+    try:
+        # Initialize system metrics callback
+        system_metrics = SystemMetricsCallback()
+        
+        # Initialize CodeCarbon tracker with output_dir
+        tracker = EmissionsTracker(
+            project_name=f"MF_{dataset_name}_split{SPLIT}",
+            output_dir="emissions_reports",
+            measure_power_secs=10,
+            save_to_file=True,
+            log_level="error"
+        )
+
+        # Start the tracker
+        tracker.start()
+        
+        # Load the dyadic dataset
+        data_module = datamodule.DyadicRegressionDataModule(
+            dataset_name=dataset_name,
+            split=SPLIT,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            verbose=verbose,
+        )
+
+        MODEL_NAME = "MF" if not fair else "MF_fair"
+
+        if not fair:
+            model = mf.CollaborativeFilteringModel(
+                num_users=data_module.num_users,
+                num_items=data_module.num_items,
+                embedding_dim=embedding_dim,
+                lr=learning_rate,
+                l2_reg=l2_reg,
+                rating_range=(data_module.min_rating, data_module.max_rating),
+            )
+        else:
+            class_weights = data_module.get_class_weights()
+            model = mf_fair.MFWithFairPretraining(
+                num_users=data_module.num_users,
+                num_items=data_module.num_items,
+                embedding_dim=embedding_dim,
+                lr=learning_rate,
+                l2_reg=l2_reg,
+                rating_range=(data_module.min_rating, data_module.max_rating),
+                class_weights=class_weights,
+            )
+
+        # Clean up old checkpoint if exists
+        checkpoint_path = f"models/{MODEL_NAME}/checkpoints/{dataset_name}/split_{SPLIT}/best-model-{EMBEDDING_DIM}.ckpt"
+        if path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+
+        # Crear el callback de emisiones
+        emissions_callback = EmissionsPerEpochCallback()
+        
+        # Definir todos los callbacks juntos
+        callbacks = [
+            system_metrics,
+            emissions_callback,  # Añadido aquí correctamente
+            pl.callbacks.ModelCheckpoint(
+                dirpath=f"models/{MODEL_NAME}/checkpoints/{dataset_name}/split_{SPLIT}",
+                filename=f"best-model-{EMBEDDING_DIM}",
+                monitor="val_rmse",
+                mode="min",
+                save_weights_only=True,
+                enable_version_counter=False,
+            ),
+            fairness.EOgenreRelationCallback(),
+            fairness.EccentricityGCallback(data_module.train_df, SPLIT),
+        ]
+
+        trainer = pl.Trainer(
+            accelerator="auto",
+            enable_checkpointing=True,
+            callbacks=callbacks,
+            logger=True,
+            precision=16,
+            enable_model_summary=True,
+            enable_progress_bar=True,
+            max_epochs=15,
+        )
+        
+        # Check gender distribution
+        if verbose:
+            print("Distribución de género en entrenamiento:")
+            print(data_module.train_df['gender'].value_counts())
+            print("\nDistribución de género en validación:")
+            print(data_module.val_df['gender'].value_counts())
+            print("\nDistribución de género en test:")
+            print(data_module.test_df['gender'].value_counts())
+
+        # Training
+        trainer.fit(model, data_module)
+
+        # Load best model
+        if not fair:
+            model = mf.CollaborativeFilteringModel.load_from_checkpoint(
+                f"models/{MODEL_NAME}/checkpoints/{dataset_name}/split_{SPLIT}/best-model-{EMBEDDING_DIM}.ckpt"
+            )
+        else:
+            model = mf_fair.MFWithFairPretraining.load_from_checkpoint(
+                f"models/{MODEL_NAME}/checkpoints/{dataset_name}/split_{SPLIT}/best-model-{EMBEDDING_DIM}.ckpt"
+            )
+
+        # Testing
+        trainer.test(model, datamodule=data_module)
+        
+    finally:
+        # Stop the tracker and add emissions to metrics
+        emissions = tracker.stop()
+        if system_metrics.test_metrics:
+            system_metrics.test_metrics[-1]['co2_emissions_kg'] = emissions
+            print(f"\nTotal CO2 Emissions: {emissions:.6f} kg")
+            
+            # Log emissions
+            if trainer.logger:
+                trainer.logger.log_metrics({
+                    'environment/co2_emissions_kg': emissions,
+                    'environment/energy_consumed_kwh': tracker._total_energy.kWh
+                })
+
+if __name__ == "__main__":
+    train_MF(verbose=1, fair=0)

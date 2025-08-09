@@ -14,7 +14,7 @@ def load_rating(args):
     print('reading rating file ...')
 
     # reading rating file
-    rating_file = 'C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + args.dataset + '/ratings_final'
+    rating_file = 'C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + args.dataset + '/ratings_final'
     if os.path.exists(rating_file + '.npy'):
         rating_np = np.load(rating_file + '.npy')
     else:
@@ -52,7 +52,7 @@ def load_kg(args):
     print('reading KG file ...')
 
     # reading kg file
-    kg_file = 'C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + args.dataset + '/kg_final'
+    kg_file = 'C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + args.dataset + '/kg_final'
     if os.path.exists(kg_file + '.npy'):
         kg_np = np.load(kg_file + '.npy')
     else:

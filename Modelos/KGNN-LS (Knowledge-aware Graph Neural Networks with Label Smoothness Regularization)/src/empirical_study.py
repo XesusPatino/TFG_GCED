@@ -12,11 +12,11 @@ if __name__ == '__main__':
     args = parser.parse_args()
     DATASET = args.d
 
-    kg_np = np.load('C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/kg_final.npy')
+    kg_np = np.load('C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/kg_final.npy')
     kg = nx.Graph()
     kg.add_edges_from([(triple[0], triple[2]) for triple in kg_np])  # construct knowledge graph
 
-    rating_np = np.load('C:/Users/xpati/Documents/TFG/data-kgnn-ls/' + DATASET + '/ratings_final.npy')
+    rating_np = np.load('C:/Users/xpati/Documents/TFG/ml-1m/data-kgnn-ls/' + DATASET + '/ratings_final.npy')
     item_history = dict()
     item_set = set()
     for record in rating_np:
