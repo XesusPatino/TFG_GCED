@@ -1,0 +1,313 @@
+****** RESULTADOS ENTRENAMIENTOS ******
+=======================================
+
+
+- CTRPV:
+
+=== Final Training Metrics ===
+Epoch 0: Time=36.83s, Memory=363.50MB, CPU=22.7%, RMSE=8.4938, MAE=7.8162
+Epoch 1: Time=36.16s, Memory=384.46MB, CPU=78.5%, RMSE=8.1705, MAE=7.8157
+Epoch 2: Time=36.13s, Memory=384.83MB, CPU=78.5%, RMSE=8.1770, MAE=7.8157
+Epoch 3: Time=36.20s, Memory=385.41MB, CPU=77.7%, RMSE=8.2008, MAE=7.8172
+Epoch 4: Time=36.61s, Memory=384.88MB, CPU=78.3%, RMSE=8.2048, MAE=7.8167
+Epoch 5: Time=37.00s, Memory=384.88MB, CPU=78.2%, RMSE=8.2141, MAE=7.8171
+Epoch 6: Time=37.61s, Memory=384.87MB, CPU=77.7%, RMSE=8.1907, MAE=7.8176
+Epoch 7: Time=37.71s, Memory=384.90MB, CPU=78.8%, RMSE=8.1809, MAE=7.8160
+Epoch 8: Time=36.80s, Memory=380.90MB, CPU=78.2%, RMSE=8.1767, MAE=7.8153
+Epoch 9: Time=36.39s, Memory=381.01MB, CPU=78.0%, RMSE=8.1953, MAE=7.8150
+Epoch 10: Time=36.18s, Memory=381.02MB, CPU=77.6%, RMSE=8.2146, MAE=7.8159
+Epoch 11: Time=36.44s, Memory=380.99MB, CPU=77.7%, RMSE=8.1863, MAE=7.8164
+Epoch 12: Time=36.61s, Memory=381.55MB, CPU=77.9%, RMSE=8.1744, MAE=7.8147
+Epoch 13: Time=37.13s, Memory=381.05MB, CPU=77.8%, RMSE=8.1957, MAE=7.8145
+Epoch 14: Time=37.48s, Memory=381.05MB, CPU=78.0%, RMSE=8.1844, MAE=7.8155
+Epoch 15: Time=36.62s, Memory=381.05MB, CPU=78.9%, RMSE=8.2184, MAE=7.8162
+Epoch 16: Time=36.73s, Memory=381.62MB, CPU=77.5%, RMSE=8.1720, MAE=7.8163
+Epoch 17: Time=36.95s, Memory=381.15MB, CPU=78.0%, RMSE=8.1796, MAE=7.8160
+Epoch 18: Time=37.05s, Memory=381.15MB, CPU=77.8%, RMSE=8.1809, MAE=7.8149
+Epoch 19: Time=36.73s, Memory=381.62MB, CPU=77.6%, RMSE=8.1757, MAE=7.8152
+Epoch 20: Time=36.79s, Memory=381.15MB, CPU=78.0%, RMSE=8.1896, MAE=7.8139
+Epoch 21: Time=37.13s, Memory=381.18MB, CPU=77.1%, RMSE=8.1921, MAE=7.8141
+Epoch 22: Time=39.29s, Memory=381.25MB, CPU=77.5%, RMSE=8.1915, MAE=7.8141
+Epoch 23: Time=37.77s, Memory=381.25MB, CPU=81.9%, RMSE=8.1867, MAE=7.8139
+Epoch 24: Time=38.16s, Memory=381.25MB, CPU=81.5%, RMSE=8.1625, MAE=7.8141
+Epoch 25: Time=39.33s, Memory=381.32MB, CPU=81.2%, RMSE=8.1649, MAE=7.8148
+Epoch 26: Time=39.97s, Memory=381.86MB, CPU=83.8%, RMSE=8.1835, MAE=7.8136
+Epoch 27: Time=36.48s, Memory=381.33MB, CPU=83.8%, RMSE=8.1922, MAE=7.8140
+Epoch 28: Time=36.65s, Memory=382.86MB, CPU=77.3%, RMSE=8.1513, MAE=7.8129
+Epoch 29: Time=36.94s, Memory=382.93MB, CPU=77.5%, RMSE=8.1993, MAE=7.8120
+Epoch 30: Time=37.04s, Memory=382.93MB, CPU=77.6%, RMSE=8.2068, MAE=7.8129
+Epoch 31: Time=36.72s, Memory=383.32MB, CPU=78.1%, RMSE=8.1632, MAE=7.8127
+Epoch 32: Time=36.74s, Memory=383.76MB, CPU=77.9%, RMSE=8.2034, MAE=7.8139
+Epoch 33: Time=37.40s, Memory=383.84MB, CPU=77.4%, RMSE=8.1884, MAE=7.8145
+Epoch 34: Time=36.69s, Memory=383.87MB, CPU=77.9%, RMSE=8.1812, MAE=7.8143
+Epoch 35: Time=36.52s, Memory=383.88MB, CPU=77.5%, RMSE=8.1866, MAE=7.8139
+Epoch 36: Time=36.33s, Memory=383.99MB, CPU=77.8%, RMSE=8.1849, MAE=7.8140
+Epoch 37: Time=36.54s, Memory=383.99MB, CPU=77.8%, RMSE=8.1837, MAE=7.8119
+Epoch 38: Time=37.07s, Memory=384.00MB, CPU=77.6%, RMSE=8.1913, MAE=7.8116
+Epoch 39: Time=39.66s, Memory=384.06MB, CPU=78.6%, RMSE=8.1827, MAE=7.8129
+Epoch 40: Time=37.71s, Memory=384.05MB, CPU=84.0%, RMSE=8.1772, MAE=7.8134
+Epoch 41: Time=36.77s, Memory=384.06MB, CPU=79.1%, RMSE=8.1769, MAE=7.8134
+Epoch 42: Time=37.05s, Memory=384.06MB, CPU=78.2%, RMSE=8.1832, MAE=7.8137
+Epoch 43: Time=37.41s, Memory=384.12MB, CPU=78.3%, RMSE=8.2056, MAE=7.8132
+Epoch 44: Time=37.46s, Memory=384.12MB, CPU=78.2%, RMSE=8.1825, MAE=7.8117
+Epoch 45: Time=37.37s, Memory=384.12MB, CPU=77.5%, RMSE=8.1637, MAE=7.8137
+Epoch 46: Time=38.53s, Memory=384.12MB, CPU=78.4%, RMSE=8.1677, MAE=7.8139
+Epoch 47: Time=37.60s, Memory=384.88MB, CPU=79.3%, RMSE=8.2003, MAE=7.8124
+Epoch 48: Time=37.41s, Memory=384.91MB, CPU=77.4%, RMSE=8.1953, MAE=7.8132
+Epoch 49: Time=37.31s, Memory=384.97MB, CPU=77.7%, RMSE=8.1926, MAE=7.8139
+
+=== Final Test Metrics ===
+Total Time: 1862.14s (Test: 0.00s)
+Final Memory: 384.97MB
+Final CPU: 0.0%
+RMSE: 8.1820
+MAE: 7.8009
+
+=== Best Training RMSE ===
+Best RMSE: 8.1513 (Epoch 28)
+Time: 36.65s
+Memory: 382.86MB
+CPU: 77.3%
+MAE: 7.8129
+
+=== Best RMSE and Associated Emissions ===
+Best RMSE: 8.1513 (Epoch 28)
+Emissions at best RMSE: 0.00001966 kg
+Cumulative emissions at best RMSE: 0.00057891 kg
+
+
+
+
+- DOTS:
+
+=== Final Training Metrics ===
+Epoch 0: Time=7.14s, Memory=349.82MB, CPU=17.1%, RMSE=3.9880, MAE=2.5868
+Epoch 1: Time=6.62s, Memory=370.46MB, CPU=66.7%, RMSE=2.7815, MAE=2.2293
+Epoch 2: Time=7.00s, Memory=371.77MB, CPU=70.3%, RMSE=2.6000, MAE=2.2296
+Epoch 3: Time=6.95s, Memory=370.96MB, CPU=72.5%, RMSE=2.6546, MAE=2.2260
+Epoch 4: Time=6.91s, Memory=370.97MB, CPU=71.1%, RMSE=2.6386, MAE=2.2218
+Epoch 5: Time=6.68s, Memory=372.12MB, CPU=72.6%, RMSE=2.6515, MAE=2.2380
+Epoch 6: Time=6.86s, Memory=371.16MB, CPU=70.7%, RMSE=2.6065, MAE=2.2271
+Epoch 7: Time=6.74s, Memory=371.17MB, CPU=72.7%, RMSE=2.6607, MAE=2.2308
+Epoch 8: Time=6.70s, Memory=371.70MB, CPU=70.4%, RMSE=2.6430, MAE=2.2279
+Epoch 9: Time=6.87s, Memory=370.98MB, CPU=69.8%, RMSE=2.6719, MAE=2.2258
+Epoch 10: Time=6.64s, Memory=371.36MB, CPU=72.4%, RMSE=2.6346, MAE=2.2165
+Epoch 11: Time=6.75s, Memory=371.46MB, CPU=67.7%, RMSE=2.6824, MAE=2.2114
+Epoch 12: Time=6.84s, Memory=371.51MB, CPU=68.9%, RMSE=2.6607, MAE=2.2129
+Epoch 13: Time=6.70s, Memory=372.18MB, CPU=70.3%, RMSE=2.6409, MAE=2.2211
+Epoch 14: Time=6.62s, Memory=371.58MB, CPU=68.3%, RMSE=2.6559, MAE=2.2057
+Epoch 15: Time=6.73s, Memory=372.09MB, CPU=67.2%, RMSE=2.6744, MAE=2.2046
+Epoch 16: Time=6.59s, Memory=371.65MB, CPU=68.9%, RMSE=2.6003, MAE=2.2048
+Epoch 17: Time=6.58s, Memory=371.65MB, CPU=68.5%, RMSE=2.5915, MAE=2.1971
+Epoch 18: Time=6.99s, Memory=372.17MB, CPU=67.3%, RMSE=2.6426, MAE=2.2024
+Epoch 19: Time=6.56s, Memory=372.17MB, CPU=65.0%, RMSE=2.5959, MAE=2.1961
+Epoch 20: Time=6.62s, Memory=365.01MB, CPU=68.0%, RMSE=2.5886, MAE=2.1983
+Epoch 21: Time=6.58s, Memory=371.98MB, CPU=68.3%, RMSE=2.6502, MAE=2.1929
+Epoch 22: Time=6.65s, Memory=372.12MB, CPU=67.8%, RMSE=2.6244, MAE=2.2021
+Epoch 23: Time=6.74s, Memory=374.58MB, CPU=68.7%, RMSE=2.6474, MAE=2.1927
+Epoch 24: Time=6.74s, Memory=372.27MB, CPU=67.5%, RMSE=2.5422, MAE=2.1811
+Epoch 25: Time=6.59s, Memory=372.28MB, CPU=66.9%, RMSE=2.6076, MAE=2.1934
+Epoch 26: Time=6.65s, Memory=372.29MB, CPU=67.4%, RMSE=2.6060, MAE=2.1862
+Epoch 27: Time=6.71s, Memory=372.35MB, CPU=67.6%, RMSE=2.6335, MAE=2.1836
+Epoch 28: Time=6.56s, Memory=372.35MB, CPU=69.7%, RMSE=2.6556, MAE=2.1781
+Epoch 29: Time=6.61s, Memory=373.14MB, CPU=67.6%, RMSE=2.6036, MAE=2.1783
+Epoch 30: Time=6.58s, Memory=373.14MB, CPU=67.4%, RMSE=2.6399, MAE=2.1790
+Epoch 31: Time=6.63s, Memory=371.93MB, CPU=68.3%, RMSE=2.6400, MAE=2.1753
+Epoch 32: Time=6.61s, Memory=372.56MB, CPU=68.5%, RMSE=2.6294, MAE=2.1790
+Epoch 33: Time=6.65s, Memory=372.57MB, CPU=67.0%, RMSE=2.6546, MAE=2.1727
+Epoch 34: Time=6.61s, Memory=373.07MB, CPU=68.2%, RMSE=2.6383, MAE=2.1765
+Epoch 35: Time=6.65s, Memory=372.63MB, CPU=68.7%, RMSE=2.6417, MAE=2.1647
+Epoch 36: Time=6.80s, Memory=373.25MB, CPU=70.5%, RMSE=2.6317, MAE=2.1667
+Epoch 37: Time=6.68s, Memory=373.25MB, CPU=70.5%, RMSE=2.6111, MAE=2.1630
+Epoch 38: Time=6.63s, Memory=373.25MB, CPU=69.2%, RMSE=2.6480, MAE=2.1703
+Epoch 39: Time=6.71s, Memory=374.35MB, CPU=68.3%, RMSE=2.6116, MAE=2.1694
+Epoch 40: Time=6.98s, Memory=374.39MB, CPU=68.0%, RMSE=2.6065, MAE=2.1622
+Epoch 41: Time=6.80s, Memory=371.71MB, CPU=68.2%, RMSE=2.5749, MAE=2.1558
+Epoch 42: Time=6.76s, Memory=371.70MB, CPU=69.6%, RMSE=2.6112, MAE=2.1563
+Epoch 43: Time=6.76s, Memory=371.75MB, CPU=68.9%, RMSE=2.5943, MAE=2.1619
+Epoch 44: Time=6.68s, Memory=371.84MB, CPU=69.0%, RMSE=2.6064, MAE=2.1538
+Epoch 45: Time=6.66s, Memory=371.84MB, CPU=69.3%, RMSE=2.5876, MAE=2.1538
+Epoch 46: Time=6.73s, Memory=371.84MB, CPU=67.2%, RMSE=2.6320, MAE=2.1547
+Epoch 47: Time=6.75s, Memory=371.92MB, CPU=69.8%, RMSE=2.5992, MAE=2.1493
+Epoch 48: Time=6.75s, Memory=371.92MB, CPU=68.4%, RMSE=2.6217, MAE=2.1538
+Epoch 49: Time=6.95s, Memory=371.92MB, CPU=69.3%, RMSE=2.5980, MAE=2.1492
+
+=== Final Test Metrics ===
+Total Time: 338.96s (Test: 0.00s)
+Final Memory: 373.77MB
+Final CPU: 0.0%
+RMSE: 2.6383
+MAE: 2.1909
+
+=== Best Training RMSE ===
+Best RMSE: 2.5422 (Epoch 24)
+Time: 6.74s
+Memory: 372.27MB
+CPU: 67.5%
+MAE: 2.1811
+
+
+
+
+- GDSC:
+
+=== Final Training Metrics ===
+Epoch 0: Time=97.52s, Memory=371.98MB, CPU=22.9%, RMSE=1.9605, MAE=1.2364
+Epoch 1: Time=100.74s, Memory=396.19MB, CPU=87.9%, RMSE=1.8156, MAE=1.1992
+Epoch 2: Time=103.11s, Memory=396.89MB, CPU=88.6%, RMSE=1.7814, MAE=1.1730
+Epoch 3: Time=99.67s, Memory=391.79MB, CPU=88.1%, RMSE=1.7592, MAE=1.1486
+Epoch 4: Time=98.15s, Memory=392.08MB, CPU=87.3%, RMSE=1.7568, MAE=1.1279
+Epoch 5: Time=99.16s, Memory=385.30MB, CPU=86.3%, RMSE=1.7377, MAE=1.1163
+Epoch 6: Time=100.20s, Memory=388.09MB, CPU=87.2%, RMSE=1.7523, MAE=1.1012
+Epoch 7: Time=100.43s, Memory=392.41MB, CPU=87.0%, RMSE=1.7248, MAE=1.0912
+Epoch 8: Time=103.78s, Memory=391.32MB, CPU=87.3%, RMSE=1.7299, MAE=1.0813
+Epoch 9: Time=103.23s, Memory=391.27MB, CPU=87.8%, RMSE=1.7301, MAE=1.0779
+Epoch 10: Time=106.38s, Memory=392.50MB, CPU=87.1%, RMSE=1.7013, MAE=1.0715
+Epoch 11: Time=101.53s, Memory=388.43MB, CPU=89.3%, RMSE=1.7060, MAE=1.0629
+Epoch 12: Time=101.89s, Memory=184.82MB, CPU=86.7%, RMSE=1.7019, MAE=1.0592
+Epoch 13: Time=101.03s, Memory=185.99MB, CPU=86.8%, RMSE=1.6913, MAE=1.0479
+Epoch 14: Time=102.18s, Memory=187.90MB, CPU=86.3%, RMSE=1.6990, MAE=1.0427
+Epoch 15: Time=101.41s, Memory=172.20MB, CPU=87.4%, RMSE=1.6669, MAE=1.0386
+Epoch 16: Time=101.67s, Memory=174.69MB, CPU=87.0%, RMSE=1.6850, MAE=1.0351
+Epoch 17: Time=101.88s, Memory=173.99MB, CPU=87.1%, RMSE=1.6931, MAE=1.0298
+Epoch 18: Time=103.80s, Memory=168.29MB, CPU=87.2%, RMSE=1.6884, MAE=1.0256
+Epoch 19: Time=102.98s, Memory=166.71MB, CPU=87.7%, RMSE=1.6657, MAE=1.0216
+Epoch 20: Time=103.73s, Memory=167.11MB, CPU=87.2%, RMSE=1.6747, MAE=1.0184
+Epoch 21: Time=102.08s, Memory=163.21MB, CPU=87.7%, RMSE=1.6880, MAE=1.0158
+Epoch 22: Time=100.90s, Memory=162.49MB, CPU=87.0%, RMSE=1.6750, MAE=1.0117
+Epoch 23: Time=100.29s, Memory=163.74MB, CPU=86.7%, RMSE=1.6379, MAE=1.0087
+Epoch 24: Time=101.71s, Memory=163.17MB, CPU=86.8%, RMSE=1.6742, MAE=1.0066
+Epoch 25: Time=101.98s, Memory=163.38MB, CPU=86.5%, RMSE=1.6929, MAE=1.0038
+Epoch 26: Time=104.59s, Memory=163.77MB, CPU=86.9%, RMSE=1.6647, MAE=1.0033
+Epoch 27: Time=103.63s, Memory=160.91MB, CPU=87.9%, RMSE=1.6681, MAE=0.9995
+Epoch 28: Time=101.60s, Memory=161.70MB, CPU=88.5%, RMSE=1.6766, MAE=1.0003
+Epoch 29: Time=103.52s, Memory=160.89MB, CPU=88.0%, RMSE=1.6545, MAE=0.9949
+Epoch 30: Time=100.72s, Memory=159.63MB, CPU=87.8%, RMSE=1.6655, MAE=0.9963
+Epoch 31: Time=101.19s, Memory=160.83MB, CPU=87.1%, RMSE=1.6631, MAE=0.9923
+Epoch 32: Time=99.73s, Memory=159.48MB, CPU=87.0%, RMSE=1.6530, MAE=0.9923
+Epoch 33: Time=100.01s, Memory=160.69MB, CPU=86.9%, RMSE=1.6691, MAE=0.9911
+Epoch 34: Time=99.82s, Memory=159.81MB, CPU=86.9%, RMSE=1.6734, MAE=0.9875
+Epoch 35: Time=98.76s, Memory=160.86MB, CPU=87.0%, RMSE=1.6613, MAE=0.9858
+Epoch 36: Time=99.46s, Memory=160.70MB, CPU=86.4%, RMSE=1.6645, MAE=0.9863
+Epoch 37: Time=100.95s, Memory=154.00MB, CPU=86.6%, RMSE=1.6439, MAE=0.9834
+Epoch 38: Time=100.49s, Memory=160.59MB, CPU=87.6%, RMSE=1.6587, MAE=0.9832
+Epoch 39: Time=99.89s, Memory=160.49MB, CPU=86.7%, RMSE=1.6691, MAE=0.9821
+Epoch 40: Time=99.36s, Memory=162.07MB, CPU=87.3%, RMSE=1.6642, MAE=0.9808
+Epoch 41: Time=98.90s, Memory=160.70MB, CPU=86.7%, RMSE=1.6626, MAE=0.9791
+Epoch 42: Time=99.61s, Memory=160.73MB, CPU=86.7%, RMSE=1.6670, MAE=0.9784
+Epoch 43: Time=98.98s, Memory=161.99MB, CPU=86.6%, RMSE=1.6577, MAE=0.9799
+Epoch 44: Time=97.76s, Memory=160.83MB, CPU=86.6%, RMSE=1.6454, MAE=0.9760
+Epoch 45: Time=99.30s, Memory=160.89MB, CPU=86.7%, RMSE=1.6573, MAE=0.9764
+Epoch 46: Time=98.45s, Memory=162.21MB, CPU=86.9%, RMSE=1.6549, MAE=0.9774
+Epoch 47: Time=99.12s, Memory=160.00MB, CPU=86.8%, RMSE=1.6466, MAE=0.9765
+Epoch 48: Time=98.99s, Memory=161.26MB, CPU=86.7%, RMSE=1.6551, MAE=0.9754
+Epoch 49: Time=98.83s, Memory=161.28MB, CPU=86.4%, RMSE=1.6598, MAE=0.9736
+
+=== Final Test Metrics ===
+Total Time: 5048.10s (Test: 0.00s)
+Final Memory: 161.50MB
+Final CPU: 0.0%
+RMSE: 1.7670
+MAE: 1.1521
+
+=== Best Training RMSE ===
+Best RMSE: 1.6379 (Epoch 23)
+Time: 100.29s
+Memory: 163.74MB
+CPU: 86.7%
+MAE: 1.0087
+
+=== Best RMSE and Associated Emissions ===
+Best RMSE: 1.6379 (Epoch 23)
+Emissions at best RMSE: 0.00006041 kg
+Cumulative emissions at best RMSE: 0.00147283 kg
+
+
+
+
+- KIVA:
+
+=== Final Training Metrics ===
+Epoch 0: Time=35.58s, Memory=369.64MB, CPU=18.1%, RMSE=0.4383, MAE=0.1964
+Epoch 1: Time=34.09s, Memory=403.52MB, CPU=85.2%, RMSE=0.4030, MAE=0.1957
+Epoch 2: Time=34.31s, Memory=404.23MB, CPU=85.8%, RMSE=0.3806, MAE=0.1920
+Epoch 3: Time=37.84s, Memory=403.84MB, CPU=86.0%, RMSE=0.3787, MAE=0.1886
+Epoch 4: Time=41.90s, Memory=404.22MB, CPU=88.5%, RMSE=0.3703, MAE=0.1888
+Epoch 5: Time=37.93s, Memory=405.12MB, CPU=83.3%, RMSE=0.3696, MAE=0.1798
+Epoch 6: Time=37.37s, Memory=405.67MB, CPU=78.0%, RMSE=0.3441, MAE=0.1818
+Epoch 7: Time=37.94s, Memory=405.69MB, CPU=78.0%, RMSE=0.3503, MAE=0.1758
+Epoch 8: Time=38.09s, Memory=405.40MB, CPU=78.2%, RMSE=0.3423, MAE=0.1730
+Epoch 9: Time=38.28s, Memory=405.30MB, CPU=77.8%, RMSE=0.3313, MAE=0.1726
+Epoch 10: Time=40.60s, Memory=405.44MB, CPU=78.0%, RMSE=0.3191, MAE=0.1702
+Epoch 11: Time=37.63s, Memory=394.48MB, CPU=82.1%, RMSE=0.3176, MAE=0.1660
+Epoch 12: Time=38.28s, Memory=396.00MB, CPU=79.8%, RMSE=0.3213, MAE=0.1654
+Epoch 13: Time=38.07s, Memory=396.02MB, CPU=78.4%, RMSE=0.3090, MAE=0.1651
+Epoch 14: Time=37.55s, Memory=396.07MB, CPU=77.8%, RMSE=0.3065, MAE=0.1633
+Epoch 15: Time=37.50s, Memory=396.07MB, CPU=77.3%, RMSE=0.2948, MAE=0.1590
+Epoch 16: Time=37.84s, Memory=396.17MB, CPU=78.1%, RMSE=0.2915, MAE=0.1569
+Epoch 17: Time=41.60s, Memory=396.17MB, CPU=77.5%, RMSE=0.2899, MAE=0.1564
+Epoch 18: Time=39.44s, Memory=397.68MB, CPU=82.2%, RMSE=0.2785, MAE=0.1534
+Epoch 19: Time=38.22s, Memory=397.69MB, CPU=80.4%, RMSE=0.2815, MAE=0.1509
+Epoch 20: Time=37.95s, Memory=397.69MB, CPU=78.6%, RMSE=0.2838, MAE=0.1529
+Epoch 21: Time=38.16s, Memory=397.72MB, CPU=78.6%, RMSE=0.2782, MAE=0.1501
+Epoch 22: Time=38.03s, Memory=397.75MB, CPU=78.4%, RMSE=0.2778, MAE=0.1509
+Epoch 23: Time=38.41s, Memory=397.77MB, CPU=78.8%, RMSE=0.2779, MAE=0.1469
+Epoch 24: Time=38.11s, Memory=397.83MB, CPU=78.2%, RMSE=0.2729, MAE=0.1451
+Epoch 25: Time=38.69s, Memory=397.83MB, CPU=78.5%, RMSE=0.2633, MAE=0.1454
+Epoch 26: Time=37.87s, Memory=398.43MB, CPU=79.9%, RMSE=0.2672, MAE=0.1483
+Epoch 27: Time=37.91s, Memory=398.43MB, CPU=78.2%, RMSE=0.2619, MAE=0.1459
+Epoch 28: Time=38.35s, Memory=398.44MB, CPU=78.5%, RMSE=0.2541, MAE=0.1437
+Epoch 29: Time=38.25s, Memory=398.44MB, CPU=79.0%, RMSE=0.2551, MAE=0.1453
+Epoch 30: Time=39.41s, Memory=398.49MB, CPU=78.3%, RMSE=0.2528, MAE=0.1441
+Epoch 31: Time=38.23s, Memory=218.14MB, CPU=80.4%, RMSE=0.2514, MAE=0.1436
+Epoch 32: Time=39.73s, Memory=218.15MB, CPU=78.9%, RMSE=0.2473, MAE=0.1420
+Epoch 33: Time=37.67s, Memory=218.19MB, CPU=80.8%, RMSE=0.2499, MAE=0.1426
+Epoch 34: Time=38.11s, Memory=218.25MB, CPU=77.8%, RMSE=0.2525, MAE=0.1405
+Epoch 35: Time=37.83s, Memory=218.01MB, CPU=78.8%, RMSE=0.2545, MAE=0.1400
+Epoch 36: Time=37.57s, Memory=218.14MB, CPU=77.8%, RMSE=0.2491, MAE=0.1402
+Epoch 37: Time=37.02s, Memory=218.27MB, CPU=78.1%, RMSE=0.2473, MAE=0.1399
+Epoch 38: Time=37.04s, Memory=218.32MB, CPU=77.3%, RMSE=0.2478, MAE=0.1400
+Epoch 39: Time=37.06s, Memory=184.34MB, CPU=77.5%, RMSE=0.2467, MAE=0.1369
+Epoch 40: Time=37.66s, Memory=184.34MB, CPU=77.1%, RMSE=0.2434, MAE=0.1397
+Epoch 41: Time=37.30s, Memory=184.39MB, CPU=77.9%, RMSE=0.2460, MAE=0.1385
+Epoch 42: Time=36.95s, Memory=184.41MB, CPU=77.6%, RMSE=0.2380, MAE=0.1388
+Epoch 43: Time=36.99s, Memory=184.42MB, CPU=78.2%, RMSE=0.2408, MAE=0.1374
+Epoch 44: Time=37.34s, Memory=184.50MB, CPU=77.7%, RMSE=0.2385, MAE=0.1371
+Epoch 45: Time=37.80s, Memory=184.51MB, CPU=77.5%, RMSE=0.2370, MAE=0.1359
+Epoch 46: Time=37.49s, Memory=184.54MB, CPU=77.8%, RMSE=0.2346, MAE=0.1365
+Epoch 47: Time=37.04s, Memory=184.57MB, CPU=77.3%, RMSE=0.2364, MAE=0.1382
+Epoch 48: Time=37.34s, Memory=184.62MB, CPU=78.6%, RMSE=0.2341, MAE=0.1356
+Epoch 49: Time=37.66s, Memory=184.73MB, CPU=78.2%, RMSE=0.2324, MAE=0.1347
+
+=== Final Test Metrics ===
+Total Time: 1897.99s (Test: 0.00s)
+Final Memory: 184.77MB
+Final CPU: 0.0%
+RMSE: 0.4786
+MAE: 0.2504
+
+=== Best Training RMSE ===
+Best RMSE: 0.2324 (Epoch 49)
+Time: 37.66s
+Memory: 184.73MB
+CPU: 78.2%
+MAE: 0.1347
+
+=== Best RMSE and Associated Emissions ===
+Best RMSE: 0.2324 (Epoch 49)
+Emissions at best RMSE: 0.00002021 kg
+Cumulative emissions at best RMSE: 0.00102857 kg
+
+
+
+
+- Netflix:
+
+Batches por época: 100,480,507 ÷ 1,024 = ~98,125 batches
+Tiempo por batch en CPU: ~0.2-0.8 segundos
+Tiempo estimado por época: 5.4 - 21.7 horas
+
+
+
+
+
