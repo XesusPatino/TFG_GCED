@@ -63,6 +63,13 @@ class _NNMFBase(tf.keras.Model):
         ratings = data['rating']
         predictions = self([user_ids, item_ids], training=False)
         return tf.sqrt(tf.reduce_mean(tf.square(tf.subtract(predictions, ratings))))
+    
+    def eval_mae(self, data):
+        user_ids = data['user_id']
+        item_ids = data['item_id']
+        ratings = data['rating']
+        predictions = self([user_ids, item_ids], training=False)
+        return tf.reduce_mean(tf.abs(tf.subtract(predictions, ratings)))
 
     def predict(self, user_id, item_id):
         rating = self([user_id], [item_id], training=False)

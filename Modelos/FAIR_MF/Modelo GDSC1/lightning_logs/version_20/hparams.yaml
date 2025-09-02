@@ -1,0 +1,9 @@
+embedding_dim: 64
+has_gender: false
+l2_reg: 0.01
+lr: 0.001
+num_items: 1532
+num_users: 1789884
+rating_range: !!python/tuple
+- -10.577744
+- 12.354552

@@ -20,7 +20,7 @@ import logging
 logging.getLogger("pytorch_lightning.utilities.distributed").setLevel(logging.WARNING)
 logging.getLogger("pytorch_lightning.accelerators.gpu").setLevel(logging.WARNING)
 
-DATA_DIR = "C:/Users/xpati/Documents/TFG/ml-1m"
+DATA_DIR = "C:/Users/xpati/Documents/TFG"
 
 # Create command line arguments
 args = ArgumentParser()
@@ -55,16 +55,30 @@ class EmissionsMetricsCallback(pl.Callback):
         self.test_start_time = None
         self.train_metrics = []
         self.test_metrics = []
+        self.current_epoch_metrics = {}
+        
+        # Best metrics tracking
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
         # Emissions related
         self.epoch_emissions = []
         self.cumulative_emissions = []  # Nueva lista para emisiones acumulativas
         self.epoch_rmse = []
-        self.epoch_recall = []
-        self.epoch_ndcg = []
+        self.epoch_recall_5 = []
+        self.epoch_recall_10 = []
+        self.epoch_recall_20 = []
+        self.epoch_recall_50 = []
+        self.epoch_ndcg_5 = []
+        self.epoch_ndcg_10 = []
+        self.epoch_ndcg_20 = []
+        self.epoch_ndcg_50 = []
         self.total_emissions = 0.0
         self.emission_tracker = None
         self.trackers = {}
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Val data collection
         self.val_results = {
@@ -163,15 +177,27 @@ class EmissionsMetricsCallback(pl.Callback):
         # 3. Calculate RMSE and recommendation metrics on validation set
         val_metrics = self.calculate_epoch_metrics(trainer, pl_module)
         val_rmse = val_metrics['rmse']
-        val_recall = val_metrics['recall']
-        val_ndcg = val_metrics['ndcg']
+        
+        # Track best RMSE for later reporting
+        if val_rmse < self.best_rmse:
+            self.best_rmse = val_rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
+            self.best_rmse_emissions = epoch_co2
+            self.best_rmse_cumulative_emissions = self.total_emissions
         
         # 4. Store metrics for this epoch
         self.epoch_emissions.append(epoch_co2)  # Emisiones de esta época
         self.cumulative_emissions.append(self.total_emissions)  # Emisiones acumuladas hasta esta época
         self.epoch_rmse.append(val_rmse)
-        self.epoch_recall.append(val_recall)
-        self.epoch_ndcg.append(val_ndcg)
+        self.epoch_recall_5.append(val_metrics['recall_5'])
+        self.epoch_recall_10.append(val_metrics['recall_10'])
+        self.epoch_recall_20.append(val_metrics['recall_20'])
+        self.epoch_recall_50.append(val_metrics['recall_50'])
+        self.epoch_ndcg_5.append(val_metrics['ndcg_5'])
+        self.epoch_ndcg_10.append(val_metrics['ndcg_10'])
+        self.epoch_ndcg_20.append(val_metrics['ndcg_20'])
+        self.epoch_ndcg_50.append(val_metrics['ndcg_50'])
         
         # 5. Log all metrics
         metrics_to_log = {
@@ -181,12 +207,18 @@ class EmissionsMetricsCallback(pl.Callback):
             'emissions/epoch_co2_kg': epoch_co2,
             'emissions/cumulative_co2_kg': self.total_emissions,  # Log de emisiones acumuladas
             'metrics/epoch_rmse': val_rmse,
-            'metrics/epoch_recall': val_recall,
-            'metrics/epoch_ndcg': val_ndcg,
+            'metrics/epoch_recall_5': val_metrics['recall_5'],
+            'metrics/epoch_recall_10': val_metrics['recall_10'],
+            'metrics/epoch_recall_20': val_metrics['recall_20'],
+            'metrics/epoch_recall_50': val_metrics['recall_50'],
+            'metrics/epoch_ndcg_5': val_metrics['ndcg_5'],
+            'metrics/epoch_ndcg_10': val_metrics['ndcg_10'],
+            'metrics/epoch_ndcg_20': val_metrics['ndcg_20'],
+            'metrics/epoch_ndcg_50': val_metrics['ndcg_50'],
             # También log con nombres para checkpointing
             'val_rmse': val_rmse,
-            'val_recall': val_recall,
-            'val_ndcg': val_ndcg,
+            'val_recall': val_metrics['recall_5'],  # Use recall@5 for checkpointing
+            'val_ndcg': val_metrics['ndcg_5'],      # Use ndcg@5 for checkpointing
         }
         
         if 'gpu_usage_mb' in self.current_epoch_metrics:
@@ -200,8 +232,10 @@ class EmissionsMetricsCallback(pl.Callback):
         print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
         print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
         print(f"  RMSE: {val_rmse:.4f}")
-        print(f"  Recall@5: {val_recall:.4f}")
-        print(f"  NDCG@5: {val_ndcg:.4f}")
+        print(f"  Recall@5: {val_metrics['recall_5']:.4f}")
+        print(f"  Recall@10: {val_metrics['recall_10']:.4f}")
+        print(f"  NDCG@5: {val_metrics['ndcg_5']:.4f}")
+        print(f"  NDCG@10: {val_metrics['ndcg_10']:.4f}")
         print(f"  Epoch CO2: {epoch_co2:.6f} kg")
         print(f"  Total CO2: {self.total_emissions:.6f} kg")  # Mostrar emisiones acumuladas
         if 'gpu_usage_mb' in self.current_epoch_metrics:
@@ -213,9 +247,9 @@ class EmissionsMetricsCallback(pl.Callback):
         pl_module.eval()
         dataloader = trainer.datamodule.val_dataloader()
         
-        all_preds = []
-        all_targets = []
-        all_user_ids = []
+        # Collect predictions by user for proper top-k calculation
+        user_predictions = {}
+        user_ratings = {}
         
         with torch.no_grad():
             for batch in dataloader:
@@ -226,64 +260,100 @@ class EmissionsMetricsCallback(pl.Callback):
                 
                 preds = pl_module(user_ids, item_ids)
                 
-                all_preds.append(preds.cpu())
-                all_targets.append(ratings.cpu())
-                all_user_ids.append(user_ids.cpu())
+                # Flatten predictions if needed
+                if preds.dim() > 1 and preds.size(1) == 1:
+                    preds = preds.squeeze()
+                
+                # Group by user
+                for i in range(len(user_ids)):
+                    uid = user_ids[i].item()
+                    iid = item_ids[i].item()
+                    pred = preds[i].item()
+                    rating = ratings[i].item()
+                    
+                    if uid not in user_predictions:
+                        user_predictions[uid] = []
+                        user_ratings[uid] = []
+                    
+                    user_predictions[uid].append((iid, pred))
+                    user_ratings[uid].append((iid, rating))
         
-        # Concatenate results
-        preds = torch.cat(all_preds)
-        targets = torch.cat(all_targets)
-        user_ids = torch.cat(all_user_ids)
+        # Calculate RMSE first
+        all_preds = []
+        all_targets = []
+        for uid in user_predictions:
+            for (iid, pred), (_, rating) in zip(user_predictions[uid], user_ratings[uid]):
+                all_preds.append(pred)
+                all_targets.append(rating)
         
-        # Calculate RMSE
-        if preds.dim() > 1 and preds.size(1) == 1:
-            preds_flat = preds.squeeze()
-        else:
-            preds_flat = preds
+        rmse = np.sqrt(np.mean([(p - t) ** 2 for p, t in zip(all_preds, all_targets)]))
+        
+        # Calculate top-k metrics for multiple k values
+        k_values = [5, 10, 20, 50]
+        threshold = 3.0  # Threshold for binary relevance
+        
+        recall_results = {}
+        ndcg_results = {}
+        
+        for k in k_values:
+            recalls = []
+            ndcgs = []
             
-        rmse = torch.sqrt(torch.mean((preds_flat - targets) ** 2)).item()
-        
-        # Calculate top-k metrics
-        threshold = 3.0  # Umbral para convertir ratings a relevancia binaria
-        binary_targets = (targets >= threshold).float()
-        
-        # Prepare for top-k calculations
-        if preds.dim() == 1:
-            preds = preds.unsqueeze(1)
-        
-        if binary_targets.dim() == 1:
-            binary_targets = binary_targets.unsqueeze(1)
-        
-        # Ensure sizes match for top-k operations
-        k = min(5, preds.size(1))
-        
-        # If binary_targets only has one column but we need multiple for gather
-        if binary_targets.size(1) == 1 and preds.size(1) > 1:
-            binary_targets = binary_targets.expand(-1, preds.size(1))
-        
-        # Calculate top-k
-        _, top_k_indices = torch.topk(preds, k=k, dim=1)
-        
-        # Gather predictions and targets for top-k items
-        preds_top_k = torch.gather(preds, dim=1, index=top_k_indices)
-        targets_top_k = torch.gather(binary_targets, dim=1, index=top_k_indices)
-        
-        # Expand user_ids for indexes
-        user_ids_expanded = user_ids.unsqueeze(1).expand(-1, preds_top_k.size(1))
-        
-        # Calculate metrics
-        recall_at_k = RetrievalRecall(top_k=k)
-        ndcg_at_k = RetrievalNormalizedDCG(top_k=k)
-        
-        recall = recall_at_k(preds_top_k, targets_top_k, indexes=user_ids_expanded).item()
-        ndcg = ndcg_at_k(preds_top_k, targets_top_k, indexes=user_ids_expanded).item()
+            for uid in user_predictions:
+                # Sort items by prediction score (descending)
+                user_items = sorted(user_predictions[uid], key=lambda x: x[1], reverse=True)
+                user_ratings_dict = {iid: rating for iid, rating in user_ratings[uid]}
+                
+                # Get top-k items
+                top_k_items = user_items[:min(k, len(user_items))]
+                
+                if len(top_k_items) == 0:
+                    continue
+                
+                # Calculate recall@k
+                relevant_items = [iid for iid, rating in user_ratings[uid] if rating >= threshold]
+                if len(relevant_items) > 0:
+                    recommended_relevant = [iid for iid, _ in top_k_items if iid in relevant_items]
+                    recall = len(recommended_relevant) / len(relevant_items)
+                else:
+                    recall = 0.0
+                recalls.append(recall)
+                
+                # Calculate NDCG@k
+                dcg = 0.0
+                idcg = 0.0
+                
+                # DCG calculation
+                for i, (iid, _) in enumerate(top_k_items):
+                    if iid in user_ratings_dict:
+                        rating = user_ratings_dict[iid]
+                        if rating >= threshold:
+                            dcg += 1.0 / np.log2(i + 2)  # i+2 because log2(1) = 0
+                
+                # IDCG calculation (ideal ranking)
+                ideal_ratings = sorted([rating for _, rating in user_ratings[uid]], reverse=True)
+                for i, rating in enumerate(ideal_ratings[:k]):
+                    if rating >= threshold:
+                        idcg += 1.0 / np.log2(i + 2)
+                
+                ndcg = dcg / idcg if idcg > 0 else 0.0
+                ndcgs.append(ndcg)
+            
+            recall_results[k] = np.mean(recalls) if recalls else 0.0
+            ndcg_results[k] = np.mean(ndcgs) if ndcgs else 0.0
         
         pl_module.train()
         
         return {
             'rmse': rmse,
-            'recall': recall,
-            'ndcg': ndcg
+            'recall_5': recall_results[5],
+            'recall_10': recall_results[10],
+            'recall_20': recall_results[20],
+            'recall_50': recall_results[50],
+            'ndcg_5': ndcg_results[5],
+            'ndcg_10': ndcg_results[10],
+            'ndcg_20': ndcg_results[20],
+            'ndcg_50': ndcg_results[50]
         }
     
     def on_train_end(self, trainer, pl_module):
@@ -308,8 +378,14 @@ class EmissionsMetricsCallback(pl.Callback):
             'epoch_emissions_kg': self.epoch_emissions,
             'cumulative_emissions_kg': self.cumulative_emissions,  # Emisiones acumuladas
             'rmse': self.epoch_rmse,
-            'recall': self.epoch_recall,
-            'ndcg': self.epoch_ndcg
+            'recall_5': self.epoch_recall_5,
+            'recall_10': self.epoch_recall_10,
+            'recall_20': self.epoch_recall_20,
+            'recall_50': self.epoch_recall_50,
+            'ndcg_5': self.epoch_ndcg_5,
+            'ndcg_10': self.epoch_ndcg_10,
+            'ndcg_20': self.epoch_ndcg_20,
+            'ndcg_50': self.epoch_ndcg_50
         })
         
         # 4. Save metrics to CSV
@@ -340,32 +416,32 @@ class EmissionsMetricsCallback(pl.Callback):
         
         # 2. Emisiones acumulativas vs Recall
         plt.figure(figsize=(10, 6))
-        plt.plot(self.cumulative_emissions, self.epoch_recall, 'g-', marker='o')
+        plt.plot(self.cumulative_emissions, self.epoch_recall_5, 'g-', marker='o')
         
         # Añadir etiquetas con el número de época
-        for i, (emissions, recall) in enumerate(zip(self.cumulative_emissions, self.epoch_recall)):
+        for i, (emissions, recall) in enumerate(zip(self.cumulative_emissions, self.epoch_recall_5)):
             plt.annotate(f"{i}", (emissions, recall), textcoords="offset points", 
                         xytext=(0,10), ha='center', fontsize=9)
             
         plt.xlabel('Emisiones de CO2 acumuladas (kg)')
         plt.ylabel('Recall@5')
-        plt.title('Relación entre Emisiones Acumuladas y Recall')
+        plt.title('Relación entre Emisiones Acumuladas y Recall@5')
         plt.grid(True, alpha=0.3)
         plt.savefig(f'emissions_plots/cumulative_emissions_vs_recall_{timestamp}.png')
         plt.close()
         
         # 3. Emisiones acumulativas vs NDCG
         plt.figure(figsize=(10, 6))
-        plt.plot(self.cumulative_emissions, self.epoch_ndcg, 'c-', marker='o')
+        plt.plot(self.cumulative_emissions, self.epoch_ndcg_5, 'c-', marker='o')
         
         # Añadir etiquetas con el número de época
-        for i, (emissions, ndcg) in enumerate(zip(self.cumulative_emissions, self.epoch_ndcg)):
+        for i, (emissions, ndcg) in enumerate(zip(self.cumulative_emissions, self.epoch_ndcg_5)):
             plt.annotate(f"{i}", (emissions, ndcg), textcoords="offset points", 
                         xytext=(0,10), ha='center', fontsize=9)
             
         plt.xlabel('Emisiones de CO2 acumuladas (kg)')
         plt.ylabel('NDCG@5')
-        plt.title('Relación entre Emisiones Acumuladas y NDCG')
+        plt.title('Relación entre Emisiones Acumuladas y NDCG@5')
         plt.grid(True, alpha=0.3)
         plt.savefig(f'emissions_plots/cumulative_emissions_vs_ndcg_{timestamp}.png')
         plt.close()
@@ -375,8 +451,8 @@ class EmissionsMetricsCallback(pl.Callback):
         
         # Normalizar los valores para que se puedan comparar en la misma escala
         rmse_norm = [r / max(self.epoch_rmse) for r in self.epoch_rmse]
-        recall_norm = [r / max(self.epoch_recall) if max(self.epoch_recall) > 0 else 0 for r in self.epoch_recall]
-        ndcg_norm = [n / max(self.epoch_ndcg) if max(self.epoch_ndcg) > 0 else 0 for n in self.epoch_ndcg]
+        recall_norm = [r / max(self.epoch_recall_5) if max(self.epoch_recall_5) > 0 else 0 for r in self.epoch_recall_5]
+        ndcg_norm = [n / max(self.epoch_ndcg_5) if max(self.epoch_ndcg_5) > 0 else 0 for n in self.epoch_ndcg_5]
         
         plt.plot(self.cumulative_emissions, rmse_norm, 'b-', marker='o', label='RMSE (normalizado)')
         plt.plot(self.cumulative_emissions, recall_norm, 'g-', marker='^', label='Recall@5 (normalizado)')
@@ -416,7 +492,7 @@ class EmissionsMetricsCallback(pl.Callback):
         plt.ylabel('RMSE')
         
         plt.subplot(2, 2, 4)
-        plt.plot(range(len(self.epoch_ndcg)), self.epoch_ndcg, 'c-', marker='o')
+        plt.plot(range(len(self.epoch_ndcg_5)), self.epoch_ndcg_5, 'c-', marker='o')
         plt.title('NDCG@5 por Época')
         plt.xlabel('Época')
         plt.ylabel('NDCG@5')
@@ -433,9 +509,9 @@ class EmissionsMetricsCallback(pl.Callback):
         
         scatter1 = plt.scatter(self.epoch_rmse, self.cumulative_emissions, 
                     label='RMSE', color='blue', marker='o', s=sizes, alpha=0.7)
-        scatter2 = plt.scatter(self.epoch_recall, self.cumulative_emissions, 
+        scatter2 = plt.scatter(self.epoch_recall_5, self.cumulative_emissions, 
                     label='Recall@5', color='green', marker='^', s=sizes, alpha=0.7)
-        scatter3 = plt.scatter(self.epoch_ndcg, self.cumulative_emissions, 
+        scatter3 = plt.scatter(self.epoch_ndcg_5, self.cumulative_emissions, 
                     label='NDCG@5', color='cyan', marker='s', s=sizes, alpha=0.7)
         
         # Añadir etiquetas de época
@@ -494,51 +570,87 @@ class EmissionsMetricsCallback(pl.Callback):
         # Concatenate results
         test_results = {k: torch.cat(v) for k, v in self.test_results.items()}
         
-        # Calculate test metrics
-        preds = test_results['predictions']
-        targets = test_results['ratings']
-        user_ids = test_results['user_ids']
+        # Calculate comprehensive test metrics using the same approach as validation
+        user_predictions = {}
+        user_ratings = {}
+        
+        # Group test results by user
+        for i in range(len(test_results['user_ids'])):
+            uid = test_results['user_ids'][i].item()
+            iid = test_results['item_ids'][i].item()
+            pred = test_results['predictions'][i].item() if test_results['predictions'][i].dim() == 0 else test_results['predictions'][i].squeeze().item()
+            rating = test_results['ratings'][i].item()
+            
+            if uid not in user_predictions:
+                user_predictions[uid] = []
+                user_ratings[uid] = []
+            
+            user_predictions[uid].append((iid, pred))
+            user_ratings[uid].append((iid, rating))
         
         # Calculate RMSE
-        if preds.dim() > 1 and preds.size(1) == 1:
-            preds_flat = preds.squeeze()
-        else:
-            preds_flat = preds
-            
-        rmse = torch.sqrt(torch.mean((preds_flat - targets) ** 2))
+        all_preds = []
+        all_targets = []
+        for uid in user_predictions:
+            for (iid, pred), (_, rating) in zip(user_predictions[uid], user_ratings[uid]):
+                all_preds.append(pred)
+                all_targets.append(rating)
         
-        # Calculate top-k metrics
+        rmse = np.sqrt(np.mean([(p - t) ** 2 for p, t in zip(all_preds, all_targets)]))
+        
+        # Calculate top-k metrics for multiple k values
+        k_values = [5, 10, 20, 50]
         threshold = 3.0
-        binary_targets = (targets >= threshold).float()
         
-        top_k = 5  # You can change this to match your requirements
+        test_recall_results = {}
+        test_ndcg_results = {}
         
-        # Prepare data for top-k calculations
-        if preds.dim() == 1:
-            preds = preds.unsqueeze(1)
-        
-        if binary_targets.dim() == 1:
-            binary_targets = binary_targets.unsqueeze(1)
-        
-        if binary_targets.size(1) == 1 and preds.size(1) > 1:
-            binary_targets = binary_targets.expand(-1, preds.size(1))
-        
-        # Calculate top-k indices
-        _, top_k_indices = torch.topk(preds, k=min(top_k, preds.size(1)), dim=1)
-        
-        # Gather predictions and targets for top-k items
-        preds_top_k = torch.gather(preds, dim=1, index=top_k_indices)
-        targets_top_k = torch.gather(binary_targets, dim=1, index=top_k_indices)
-        
-        # Expand user_ids for indexes
-        user_ids_expanded = user_ids.unsqueeze(1).expand(-1, preds_top_k.size(1))
-        
-        # Calculate metrics
-        recall_at_k = RetrievalRecall(top_k=top_k)
-        ndcg_at_k = RetrievalNormalizedDCG(top_k=top_k)
-        
-        recall = recall_at_k(preds_top_k, targets_top_k, indexes=user_ids_expanded)
-        ndcg = ndcg_at_k(preds_top_k, targets_top_k, indexes=user_ids_expanded)
+        for k in k_values:
+            recalls = []
+            ndcgs = []
+            
+            for uid in user_predictions:
+                # Sort items by prediction score (descending)
+                user_items = sorted(user_predictions[uid], key=lambda x: x[1], reverse=True)
+                user_ratings_dict = {iid: rating for iid, rating in user_ratings[uid]}
+                
+                # Get top-k items
+                top_k_items = user_items[:min(k, len(user_items))]
+                
+                if len(top_k_items) == 0:
+                    continue
+                
+                # Calculate recall@k
+                relevant_items = [iid for iid, rating in user_ratings[uid] if rating >= threshold]
+                if len(relevant_items) > 0:
+                    recommended_relevant = [iid for iid, _ in top_k_items if iid in relevant_items]
+                    recall = len(recommended_relevant) / len(relevant_items)
+                else:
+                    recall = 0.0
+                recalls.append(recall)
+                
+                # Calculate NDCG@k
+                dcg = 0.0
+                idcg = 0.0
+                
+                # DCG calculation
+                for i, (iid, _) in enumerate(top_k_items):
+                    if iid in user_ratings_dict:
+                        rating = user_ratings_dict[iid]
+                        if rating >= threshold:
+                            dcg += 1.0 / np.log2(i + 2)
+                
+                # IDCG calculation (ideal ranking)
+                ideal_ratings = sorted([rating for _, rating in user_ratings[uid]], reverse=True)
+                for i, rating in enumerate(ideal_ratings[:k]):
+                    if rating >= threshold:
+                        idcg += 1.0 / np.log2(i + 2)
+                
+                ndcg = dcg / idcg if idcg > 0 else 0.0
+                ndcgs.append(ndcg)
+            
+            test_recall_results[k] = np.mean(recalls) if recalls else 0.0
+            test_ndcg_results[k] = np.mean(ndcgs) if ndcgs else 0.0
         
         # Calculate timing
         test_time = time.time() - self.test_start_time
@@ -548,9 +660,17 @@ class EmissionsMetricsCallback(pl.Callback):
         final_metrics = {
             'time/total_time_sec': total_time,
             'time/test_time_sec': test_time,
-            'metrics/test_rmse': rmse.item(),
-            'metrics/test_recall@5': recall.item(),
-            'metrics/test_ndcg@5': ndcg.item(),
+            'memory/final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
+            'cpu/final_cpu_usage_percent': psutil.cpu_percent(),
+            'metrics/test_rmse': rmse,
+            'metrics/test_recall@5': test_recall_results[5],
+            'metrics/test_recall@10': test_recall_results[10],
+            'metrics/test_recall@20': test_recall_results[20],
+            'metrics/test_recall@50': test_recall_results[50],
+            'metrics/test_ndcg@5': test_ndcg_results[5],
+            'metrics/test_ndcg@10': test_ndcg_results[10],
+            'metrics/test_ndcg@20': test_ndcg_results[20],
+            'metrics/test_ndcg@50': test_ndcg_results[50],
         }
         
         if torch.cuda.is_available():
@@ -558,12 +678,52 @@ class EmissionsMetricsCallback(pl.Callback):
         
         self.test_metrics.append(final_metrics)
         
-        # Print final summary
-        print(f"\n=== Final Test Metrics ===")
+        # Print comprehensive final summaries
+        print("\n=== Final Training Metrics ===")
+        for i, m in enumerate(self.train_metrics):
+            print(f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, "
+                  f"Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, "
+                  f"RMSE={self.epoch_rmse[i]:.4f}, Recall@5={self.epoch_recall_5[i]:.4f}, "
+                  f"Recall@10={self.epoch_recall_10[i]:.4f}, NDCG@5={self.epoch_ndcg_5[i]:.4f}, "
+                  f"NDCG@10={self.epoch_ndcg_10[i]:.4f}", end='')
+            if 'gpu_usage_mb' in m:
+                print(f", GPU={m['gpu_usage_mb']:.2f}MB")
+            else:
+                print()
+        
+        print("\n=== Final Test Metrics ===")
         print(f"Total Time: {total_time:.2f}s (Test: {test_time:.2f}s)")
-        print(f"RMSE: {rmse.item():.4f}")
-        print(f"Recall@{top_k}: {recall.item():.4f}")
-        print(f"NDCG@{top_k}: {ndcg.item():.4f}")
+        print(f"Final Memory: {final_metrics['memory/final_memory_usage_mb']:.2f}MB")
+        print(f"Final CPU: {final_metrics['cpu/final_cpu_usage_percent']:.1f}%")
+        if 'gpu/final_gpu_usage_mb' in final_metrics:
+            print(f"Final GPU: {final_metrics['gpu/final_gpu_usage_mb']:.2f}MB")
+        print(f"RMSE: {rmse:.4f}")
+        print(f"Recall@5: {test_recall_results[5]:.4f}")
+        print(f"Recall@10: {test_recall_results[10]:.4f}")
+        print(f"Recall@20: {test_recall_results[20]:.4f}")
+        print(f"Recall@50: {test_recall_results[50]:.4f}")
+        print(f"NDCG@5: {test_ndcg_results[5]:.4f}")
+        print(f"NDCG@10: {test_ndcg_results[10]:.4f}")
+        print(f"NDCG@20: {test_ndcg_results[20]:.4f}")
+        print(f"NDCG@50: {test_ndcg_results[50]:.4f}")
+        
+        # Show best training RMSE information
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
+                if 'gpu_usage_mb' in self.best_rmse_metrics:
+                    print(f"GPU: {self.best_rmse_metrics['gpu_usage_mb']:.2f}MB")
+            
+            print(f"\n=== Best RMSE and Associated Emissions ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_emissions is not None:
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+            if self.best_rmse_cumulative_emissions is not None:
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
         
         # Log metrics to the logger
         if trainer.logger:

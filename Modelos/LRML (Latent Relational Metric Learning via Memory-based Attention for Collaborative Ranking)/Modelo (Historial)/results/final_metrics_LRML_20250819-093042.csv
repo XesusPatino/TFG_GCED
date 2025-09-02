@@ -1,0 +1,2 @@
+model,final_rmse,final_mae,history_weight,total_time_seconds,memory_usage_mb
+LRML_History,2.340523004713622,2.204057076970935,0.3,1049.4375576972961,737.8828125

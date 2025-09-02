@@ -23,11 +23,20 @@ class EmissionsPerEpochTracker:
         self.epoch_emissions = []
         self.cumulative_emissions = []
         self.epoch_rmse = []
-        self.epoch_recall = []
-        self.epoch_ndcg = []
+        self.epoch_mae = []
         self.epoch_loss = []
         self.total_emissions = 0.0
         self.trackers = {}
+        
+        # Variables para rastrear el mejor RMSE y sus emisiones
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
+        self.best_rmse_time = None
+        self.best_rmse_memory = None
+        self.best_rmse_cpu = None
+        self.best_rmse_mae = None
         
         # Crear directorios para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
@@ -53,7 +62,7 @@ class EmissionsPerEpochTracker:
             print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, loss, rmse=None, recall=None, ndcg=None):
+    def end_epoch(self, epoch, loss, rmse=None, mae=None, epoch_time=None, memory=None, cpu=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -73,19 +82,26 @@ class EmissionsPerEpochTracker:
                 
             if rmse is not None:
                 self.epoch_rmse.append(rmse)
+                # Rastrear el mejor RMSE y sus métricas asociadas
+                if rmse < self.best_rmse:
+                    self.best_rmse = rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
+                    self.best_rmse_time = epoch_time
+                    self.best_rmse_memory = memory
+                    self.best_rmse_cpu = cpu
+                    self.best_rmse_mae = mae
             
-            if recall is not None:
-                self.epoch_recall.append(recall)
-                
-            if ndcg is not None:
-                self.epoch_ndcg.append(ndcg)
+            if mae is not None:
+                self.epoch_mae.append(mae)
             
             print(f"Epoch {epoch+1} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg")
             
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
     
-    def end_training(self, final_rmse=None, final_recall=None, final_ndcg=None):
+    def end_training(self, final_rmse=None, final_mae=None):
         try:
             # Asegurarse de que todos los trackers estén detenidos
             for epoch, tracker in self.trackers.items():
@@ -105,8 +121,7 @@ class EmissionsPerEpochTracker:
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss,
                 'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions),
-                'recall': self.epoch_recall if self.epoch_recall else [None] * len(self.epoch_emissions),
-                'ndcg': self.epoch_ndcg if self.epoch_ndcg else [None] * len(self.epoch_emissions)
+                'mae': self.epoch_mae if self.epoch_mae else [None] * len(self.epoch_emissions)
             })
             
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
@@ -114,23 +129,30 @@ class EmissionsPerEpochTracker:
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
             
             # Graficar las relaciones
-            self.plot_emissions_vs_metrics(epochs_range, timestamp, final_rmse, final_recall, final_ndcg)
+            self.plot_emissions_vs_metrics(epochs_range, timestamp, final_rmse, final_mae)
+            
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
             
         except Exception as e:
             print(f"Error al generar gráficos de emisiones: {e}")
             traceback.print_exc()
     
-    def plot_emissions_vs_metrics(self, epochs_range, timestamp, final_rmse=None, final_recall=None, final_ndcg=None):
+    def plot_emissions_vs_metrics(self, epochs_range, timestamp, final_rmse=None, final_mae=None):
         """Genera gráficos para emisiones vs métricas"""
         
         try:
             from matplotlib.ticker import ScalarFormatter
             
             # 1. Gráfico combinado: Emisiones por época y acumulativas
-            plt.figure(figsize=(15, 12))
+            plt.figure(figsize=(15, 10))
             
             # Emisiones por época
-            plt.subplot(3, 2, 1)
+            plt.subplot(2, 3, 1)
             plt.plot(epochs_range, self.epoch_emissions, 'r-', marker='x')
             plt.title('Emisiones por Época')
             plt.xlabel('Época')
@@ -138,7 +160,7 @@ class EmissionsPerEpochTracker:
             plt.grid(True, alpha=0.3)
             
             # Emisiones acumuladas
-            plt.subplot(3, 2, 2)
+            plt.subplot(2, 3, 2)
             plt.plot(epochs_range, self.cumulative_emissions, 'r-', marker='o')
             plt.title('Emisiones Acumuladas por Época')
             plt.xlabel('Época')
@@ -146,7 +168,7 @@ class EmissionsPerEpochTracker:
             plt.grid(True, alpha=0.3)
             
             # Loss
-            plt.subplot(3, 2, 3)
+            plt.subplot(2, 3, 3)
             plt.plot(epochs_range, self.epoch_loss, 'g-', marker='o', label='Loss')
             plt.title('Loss por Época')
             plt.xlabel('Época')
@@ -155,28 +177,29 @@ class EmissionsPerEpochTracker:
             
             # RMSE
             if self.epoch_rmse:
-                plt.subplot(3, 2, 4)
+                plt.subplot(2, 3, 4)
                 plt.plot(epochs_range, self.epoch_rmse, 'b-', marker='o')
                 plt.title('RMSE por Época')
                 plt.xlabel('Época')
                 plt.ylabel('RMSE')
                 plt.grid(True, alpha=0.3)
             
-            # Recall y NDCG
-            if self.epoch_recall:
-                plt.subplot(3, 2, 5)
-                plt.plot(epochs_range, self.epoch_recall, 'm-', marker='o')
-                plt.title('Recall@10 por Época')
+            # MAE
+            if self.epoch_mae:
+                plt.subplot(2, 3, 5)
+                plt.plot(epochs_range, self.epoch_mae, 'm-', marker='o')
+                plt.title('MAE por Época')
                 plt.xlabel('Época')
-                plt.ylabel('Recall@10')
+                plt.ylabel('MAE')
                 plt.grid(True, alpha=0.3)
             
-            if self.epoch_ndcg:
-                plt.subplot(3, 2, 6)
-                plt.plot(epochs_range, self.epoch_ndcg, 'c-', marker='o')
-                plt.title('NDCG@10 por Época')
-                plt.xlabel('Época')
-                plt.ylabel('NDCG@10')
+            # RMSE vs Emisiones acumuladas
+            if self.epoch_rmse:
+                plt.subplot(2, 3, 6)
+                plt.plot(self.cumulative_emissions, self.epoch_rmse, 'c-', marker='o')
+                plt.title('RMSE vs Emisiones Acumuladas')
+                plt.xlabel('Emisiones Acumuladas (kg)')
+                plt.ylabel('RMSE')
                 plt.grid(True, alpha=0.3)
             
             plt.tight_layout()
@@ -211,34 +234,53 @@ class EmissionsPerEpochTracker:
                 plt.close()
                 print(f"Gráfico RMSE vs emisiones guardado en: {file_path}")
             
-            # 3. Recall vs Emisiones acumuladas (también en gramos)
-            if self.epoch_recall:
+            # 3. MAE vs Emisiones acumuladas (también en gramos)
+            if self.epoch_mae:
                 plt.figure(figsize=(10, 6))
                 emissions_in_g = [e * 1000 for e in self.cumulative_emissions]
-                plt.plot(emissions_in_g, self.epoch_recall, 'm-', marker='o')
+                plt.plot(emissions_in_g, self.epoch_mae, 'm-', marker='o')
                 
                 # Configurar límites del eje x
                 plt.xlim(0, max(emissions_in_g) * 1.1)
                 
                 # Añadir etiquetas con el número de época
-                for i, (emissions, recall) in enumerate(zip(emissions_in_g, self.epoch_recall)):
-                    plt.annotate(f"{i+1}", (emissions, recall), textcoords="offset points", 
+                for i, (emissions, mae) in enumerate(zip(emissions_in_g, self.epoch_mae)):
+                    plt.annotate(f"{i+1}", (emissions, mae), textcoords="offset points", 
                                 xytext=(0,10), ha='center', fontsize=9)
                     
                 plt.xlabel('Emisiones de CO₂ acumuladas (g)')
-                plt.ylabel('Recall@10')
-                plt.title('Relación entre Emisiones Acumuladas y Recall@10')
+                plt.ylabel('MAE')
+                plt.title('Relación entre Emisiones Acumuladas y MAE')
                 plt.grid(True, alpha=0.3)
                 
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_recall_{self.model_name}_{timestamp}.png'
+                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_mae_{self.model_name}_{timestamp}.png'
                 plt.savefig(file_path)
                 plt.close()
-                print(f"Gráfico Recall vs emisiones guardado en: {file_path}")
+                print(f"Gráfico MAE vs emisiones guardado en: {file_path}")
                 
         except Exception as e:
             print(f"Error al generar los gráficos: {e}")
             traceback.print_exc()
 
+
+# Función para calcular MAE
+def calculate_mae(model, sess, test_data):
+    user_ids = [x[0] for x in test_data]
+    item_ids = [x[1] for x in test_data]
+    true_ratings = [x[2] for x in test_data]
+    
+    feed_dict = {
+        model.user_input: user_ids,
+        model.item_input: item_ids,
+        model.dropout: 1.0
+    }
+    
+    predicted_ratings = sess.run(model.predict_op, feed_dict=feed_dict)
+    predicted_ratings = predicted_ratings.flatten()
+    
+    # Calcular MAE
+    mae = np.mean(np.abs(np.array(predicted_ratings) - np.array(true_ratings)))
+    return mae
 
 # Función para calcular RMSE
 def calculate_rmse(model, sess, test_data):
@@ -261,86 +303,8 @@ def calculate_rmse(model, sess, test_data):
     rmse = np.sqrt(np.mean(np.square(np.array(predicted_ratings) - np.array(true_ratings))))
     return rmse
 
-# Función para calcular Recall@K y NDCG@K
-def calculate_ranking_metrics(model, sess, test_data, k=10):
-    # Agrupar por usuario
-    user_test_items = defaultdict(list)
-    for user_id, item_id, rating in test_data:
-        # Cambiar el umbral para considerar un ítem como relevante en datos normalizados
-        if rating >= 0.6:  # 0.6 en lugar de 4 ya que normalizamos a [0,1]
-            user_test_items[user_id].append(item_id)
-    
-    recalls = []
-    ndcgs = []
-    
-    # Verificar que hay usuarios con ítems relevantes
-    if len(user_test_items) == 0:
-        print("¡Advertencia! No se encontraron ítems relevantes en los datos de prueba.")
-        return 0.0, 0.0
-    
-    num_users_processed = 0
-    for user_id, relevant_items in user_test_items.items():
-        if not relevant_items:
-            continue
-            
-        # Predecir scores para todos los ítems para este usuario
-        items_to_rank = list(range(num_items))
-        users_to_rank = [user_id] * len(items_to_rank)
-        
-        # Para evitar errores de memoria en datasets grandes, limitar el número de ítems si es necesario
-        if len(items_to_rank) > 5000:  # Procesar en lotes si hay demasiados ítems
-            items_to_rank = random.sample(items_to_rank, 5000)
-            users_to_rank = [user_id] * 5000
-        
-        feed_dict = {
-            model.user_input: users_to_rank,
-            model.item_input: items_to_rank,
-            model.dropout: 1.0
-        }
-        
-        scores = sess.run(model.predict_op, feed_dict=feed_dict)
-        scores = scores.flatten()
-        
-        # Crear pares de (ítem, score) y ordenar por score en orden descendente
-        item_scores = list(zip(items_to_rank, scores))
-        item_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        # Obtener los top-K ítems
-        top_k_items = [x[0] for x in item_scores[:k]]
-        
-        # Calcular Recall@K
-        hits = len(set(top_k_items) & set(relevant_items))
-        recall = hits / len(relevant_items) if len(relevant_items) > 0 else 0
-        recalls.append(recall)
-        
-        # Calcular NDCG@K
-        dcg = 0
-        idcg = 0
-        for i, item in enumerate(top_k_items):
-            if item in relevant_items:
-                dcg += 1 / math.log2(i + 2)  # i+2 porque i empieza en 0
-                
-        # Calcular IDCG (normalización)
-        for i in range(min(len(relevant_items), k)):
-            idcg += 1 / math.log2(i + 2)
-            
-        ndcg = dcg / idcg if idcg > 0 else 0
-        ndcgs.append(ndcg)
-        
-        # Limitar el número de usuarios a procesar para evitar tiempos de ejecución excesivos
-        num_users_processed += 1
-        if num_users_processed >= 500:  # Procesar máximo 500 usuarios
-            break
-    
-    # Verificar que hay resultados válidos antes de calcular el promedio
-    if len(recalls) == 0 or len(ndcgs) == 0:
-        print("¡Advertencia! No se pudieron calcular métricas de ranking válidas.")
-        return 0.0, 0.0
-        
-    return np.mean(recalls), np.mean(ndcgs)
 
-
-# Cargar los datos de MovieLens
+# Cargar los datos de Kiva
 ratings = pd.read_csv('C:/Users/xpati/Documents/TFG/kiva_ml17.csv')
 
 # Preprocesar los datos
@@ -444,7 +408,7 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
     batch_size = initial_batch_size
     '''
     
-    best_recall = 0
+    best_rmse = float('inf')
     patience = 10
     patience_counter = 0
     
@@ -457,13 +421,23 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
     saver = tf.compat.v1.train.Saver()
     
     all_rmse = []
-    all_recall = []
-    all_ndcg = []
+    all_mae = []
+    
+    # Variables para el resumen final de entrenamiento
+    train_metrics = []
+    
+    # Variables para rastrear el mejor RMSE
+    best_rmse = float('inf')
+    best_rmse_epoch = None
+    best_rmse_metrics = None
     
     for epoch in range(50):
         # Iniciar tracker para esta época
         epoch_tracker.start_epoch(epoch)
         epoch_start_time = time.time()
+        
+        # Medir CPU al inicio de la época
+        epoch_start_cpu = psutil.cpu_percent(interval=None)  # CPU del sistema
         
         '''
         # Aumentar tamaño de batch gradualmente para acelerar convergencia final
@@ -518,9 +492,10 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
         avg_epoch_loss = total_epoch_loss/total_batches
         print(f'Epoch {epoch + 1}, Loss: {avg_epoch_loss:.4f}')
         
-        # Al final de cada época, medir CPU
-        cpu_measurements.append(process.cpu_percent())
-        print(f"CPU: {cpu_measurements[-1]:.2f}%")
+        # Medir CPU al final de la época (promedio durante un intervalo corto)
+        epoch_cpu = psutil.cpu_percent(interval=1.0)  # Medir durante 1 segundo
+        cpu_measurements.append(epoch_cpu)
+        print(f"CPU: {epoch_cpu:.1f}%")
         
         # Calcular métricas de evaluación en cada época
         print("\n--- Métricas de evaluación ---")
@@ -533,34 +508,56 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
         print(f"RMSE: {rmse:.4f}")
         all_rmse.append(rmse)
         
-        # Calcular Recall@10 y NDCG@10
-        recall, ndcg = calculate_ranking_metrics(model, sess, eval_sample, k=10)
-        print(f"Recall@10: {recall:.4f}")
-        print(f"NDCG@10: {ndcg:.4f}")
-        all_recall.append(recall)
-        all_ndcg.append(ndcg)
+        # Calcular MAE
+        mae = calculate_mae(model, sess, eval_sample)
+        print(f"MAE: {mae:.4f}")
+        all_mae.append(mae)
+        
+        # Medir memoria actual
+        current_memory = process.memory_info().rss / (1024 * 1024)  # En MB
+        
+        # Calcular el tiempo de época
+        epoch_time = time.time() - epoch_start_time
         
         # Finalizar tracking para esta época y guardar métricas
         epoch_tracker.end_epoch(
             epoch=epoch, 
             loss=avg_epoch_loss, 
             rmse=rmse,
-            recall=recall, 
-            ndcg=ndcg
+            mae=mae,
+            epoch_time=epoch_time,
+            memory=current_memory,
+            cpu=epoch_cpu
         )
         
-        epoch_time = time.time() - epoch_start_time
         print(f"Tiempo de época: {epoch_time:.2f} segundos")
+        print(f"Memoria: {current_memory:.2f} MB")
+        print(f"CPU: {epoch_cpu:.1f}%")
         
-        # Early stopping más sofisticado
-        if recall > best_recall:
-            best_recall = recall
-            patience_counter = 0
-            print(f"¡Nuevo mejor Recall: {recall:.4f}!")
-            # Guardar el mejor modelo si es significativamente mejor
-            if recall > 0.03:  # Guardar solo si supera un umbral mínimo
+        # Guardar métricas de esta época para el resumen final
+        current_epoch_metrics = {
+            'epoch': epoch,
+            'time': epoch_time,
+            'memory': current_memory,
+            'cpu': epoch_cpu,
+            'rmse': rmse,
+            'mae': mae
+        }
+        train_metrics.append(current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if rmse < best_rmse:
+            best_rmse = rmse
+            best_rmse_epoch = epoch
+            best_rmse_metrics = current_epoch_metrics.copy()
+        
+        # Early stopping más sofisticado (ahora basado en RMSE en lugar de recall)
+        if epoch == 0 or rmse < min(all_rmse[:-1]):  # Si es la primera época o si RMSE mejoró
+            print(f"¡Nuevo mejor RMSE: {rmse:.4f}!")
+            # Guardar el mejor modelo si es significativamente bueno
+            if rmse < 1.0:  # Guardar solo si supera un umbral mínimo
                 saver.save(sess, './best_model')
-                print(f"¡Modelo guardado con Recall: {recall:.4f}!")
+                print(f"¡Modelo guardado con RMSE: {rmse:.4f}!")
     
     # Al finalizar el entrenamiento, evaluar sobre todo el conjunto de pruebas
     # Detener el tracker de CodeCarbon global
@@ -568,22 +565,21 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
     total_time = time.time() - start_time
     
     # Tomar una última medición de CPU para asegurar un valor válido
-    process = psutil.Process()
-    process.cpu_percent() # Primera llamada para inicializar
-    time.sleep(0.5)  # Esperar un momento para obtener una medición válida
-    cpu_percent = process.cpu_percent() # Segunda llamada para obtener el valor
+    final_cpu_percent = psutil.cpu_percent(interval=1.0)  # Medir durante 1 segundo
     
     # Calcular métricas finales
     print("\n=========== MÉTRICAS FINALES ===========")
     
     # Calcular RMSE final
+    test_start_time = time.time()
     final_rmse = calculate_rmse(model, sess, test_data)
     print(f"RMSE: {final_rmse:.4f}")
     
-    # Calcular Recall@10 y NDCG@10 finales
-    final_recall, final_ndcg = calculate_ranking_metrics(model, sess, test_data, k=10)
-    print(f"Recall@10: {final_recall:.4f}")
-    print(f"NDCG@10: {final_ndcg:.4f}")
+    # Calcular MAE final
+    final_mae = calculate_mae(model, sess, test_data)
+    print(f"MAE: {final_mae:.4f}")
+    
+    test_time = time.time() - test_start_time
     
     # Métricas del sistema
     memory_usage = process.memory_info().rss / (1024 * 1024)  # En MB
@@ -593,24 +589,49 @@ with tf.compat.v1.Session(graph=model.graph) as sess:
     
     # Mostrar métricas del sistema y tiempo
     print(f"Memoria utilizada: {memory_usage:.2f} MB")
-    print(f"CPU utilizada (promedio): {avg_cpu:.2f}%")
-    print(f"CPU utilizada (último valor): {cpu_percent:.2f}%")
+    print(f"CPU utilizada (promedio): {avg_cpu:.1f}%")
+    print(f"CPU utilizada (último valor): {final_cpu_percent:.1f}%")
     print(f"Emisiones totales: {emissions:.6f} kg CO2")
     print(f"Tiempo total de ejecución: {total_time:.2f} segundos")
     print("=========================================")
     
+    # Mostrar resumen final como en el modelo de referencia
+    print("\n=== Final Training Metrics ===")
+    for m in train_metrics:
+        print(f"Epoch {m['epoch']}: Time={m['time']:.2f}s, "
+              f"Memory={m['memory']:.2f}MB, CPU={m['cpu']:.1f}%, "
+              f"RMSE={m['rmse']:.4f}, MAE={m['mae']:.4f}")
+    
+    # Mostrar información del mejor RMSE durante el entrenamiento
+    if best_rmse_epoch is not None:
+        print(f"\n=== Best Training RMSE ===")
+        print(f"Best RMSE: {best_rmse:.4f} (Epoch {best_rmse_epoch})")
+        if best_rmse_metrics:
+            print(f"Time: {best_rmse_metrics['time']:.2f}s")
+            print(f"Memory: {best_rmse_metrics['memory']:.2f}MB")
+            print(f"CPU: {best_rmse_metrics['cpu']:.1f}%")
+            print(f"MAE: {best_rmse_metrics['mae']:.4f}")
+    
+    print("\n=== Final Test Metrics ===")
+    print(f"Total Time: {total_time:.2f}s (Test: {test_time:.2f}s)")
+    print(f"Final Memory: {memory_usage:.2f}MB")
+    print(f"Final CPU: {final_cpu_percent:.1f}%")
+    print(f"RMSE: {final_rmse:.4f}")
+    print(f"MAE: {final_mae:.4f}")
+    
     # Finalizar el seguimiento de emisiones por época
-    epoch_tracker.end_training(final_rmse=final_rmse, final_recall=final_recall, final_ndcg=final_ndcg)
+    epoch_tracker.end_training(final_rmse=final_rmse, final_mae=final_mae)
 
     # Guardar las métricas finales en un archivo CSV
     metrics_df = pd.DataFrame({
         'model': ['LRML'],
         'final_rmse': [final_rmse],
-        'final_recall': [final_recall],
-        'final_ndcg': [final_ndcg],
+        'final_mae': [final_mae],
         'total_emissions_kg': [emissions],
         'total_time_seconds': [total_time],
+        'test_time_seconds': [test_time],
         'average_cpu_percent': [avg_cpu],
+        'final_cpu_percent': [final_cpu_percent],
         'memory_usage_mb': [memory_usage]
     })
     metrics_df.to_csv(f'{result_path}/final_metrics_LRML_{time.strftime("%Y%m%d-%H%M%S")}.csv', index=False)

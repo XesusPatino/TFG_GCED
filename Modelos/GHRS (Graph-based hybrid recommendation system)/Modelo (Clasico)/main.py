@@ -7,6 +7,7 @@ import tensorflow as tf
 import os
 import time
 import matplotlib.pyplot as plt
+import psutil
 
 # Importaciones alternativas
 Model = tf.keras.models.Model
@@ -25,26 +26,47 @@ class EmissionsPerEpochTracker:
         self.epoch_emissions = []
         self.cumulative_emissions = []
         self.epoch_rmse = []
+        self.epoch_mae = []
         self.epoch_loss = []
         self.epoch_val_loss = []
+        self.epoch_times = []
+        self.epoch_memory = []
+        self.epoch_cpu = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.train_start_time = None
+        self.main_tracker = None
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
+        self.best_rmse_metrics = None
         
         # Crear directorio para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
         os.makedirs(f"{result_path}/emissions_plots", exist_ok=True)
-    
-    def start_epoch(self, epoch):
-        # Crear un tracker con un nombre único basado en timestamp
-        timestamp = int(time.time())
-        tracker_name = f"{self.model_name}_epoch{epoch}_{timestamp}"
         
-        self.trackers[epoch] = EmissionsTracker(
-            project_name=tracker_name,
+        # Inicializar tracker principal
+        self.main_tracker = EmissionsTracker(
+            project_name=f"{self.model_name}_training",
             output_dir=f"{self.result_path}/emissions_reports",
             save_to_file=True,
             log_level="error",
             save_to_api=False
+        )
+    
+    def start_epoch(self, epoch):
+        # Inicializar métricas del sistema para esta época
+        self.epoch_start_time = time.time()
+        
+        # Crear tracker individual para esta época con allow_multiple_runs
+        self.trackers[epoch] = EmissionsTracker(
+            project_name=f"{self.model_name}_epoch_{epoch}",
+            output_dir=f"{self.result_path}/emissions_reports",
+            save_to_file=True,
+            log_level="error",
+            save_to_api=False,
+            allow_multiple_runs=True
         )
         
         try:
@@ -53,7 +75,7 @@ class EmissionsPerEpochTracker:
             print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, loss, val_loss=None, val_rmse=None):
+    def end_epoch(self, epoch, loss, val_loss=None, val_rmse=None, val_mae=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -63,6 +85,13 @@ class EmissionsPerEpochTracker:
                     print(f"Advertencia: Error al detener el tracker para la época {epoch}: {e}")
                     epoch_co2 = 0.0
             
+            # Calcular tiempo de época
+            epoch_time = time.time() - self.epoch_start_time
+            
+            # Obtener métricas del sistema
+            memory_usage = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2  # MB
+            cpu_usage = psutil.cpu_percent()
+            
             # Acumular emisiones totales
             self.total_emissions += epoch_co2
             
@@ -70,21 +99,49 @@ class EmissionsPerEpochTracker:
             self.epoch_emissions.append(epoch_co2)
             self.cumulative_emissions.append(self.total_emissions)
             self.epoch_loss.append(loss)
+            self.epoch_times.append(epoch_time)
+            self.epoch_memory.append(memory_usage)
+            self.epoch_cpu.append(cpu_usage)
             
             if val_loss is not None:
                 self.epoch_val_loss.append(val_loss)
                 
             if val_rmse is not None:
                 self.epoch_rmse.append(val_rmse)
+                
+            if val_mae is not None:
+                self.epoch_mae.append(val_mae)
             
-            print(f"Epoch {epoch+1} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg")
-            print(f"Loss: {loss:.4f}, Val Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}")
+            # Rastrear el mejor RMSE y sus emisiones
+            if val_rmse is not None and val_rmse < self.best_rmse:
+                self.best_rmse = val_rmse
+                self.best_rmse_epoch = epoch
+                self.best_rmse_emissions = epoch_co2
+                self.best_rmse_cumulative_emissions = self.total_emissions
+                self.best_rmse_metrics = {
+                    'time': epoch_time,
+                    'memory': memory_usage,
+                    'cpu': cpu_usage,
+                    'mae': val_mae
+                }
+            
+            print(f"Epoch {epoch+1}: Time={epoch_time:.2f}s, Memory={memory_usage:.2f}MB, CPU={cpu_usage:.1f}%, RMSE={val_rmse:.4f}, MAE={val_mae:.4f}")
+            print(f"Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg")
             
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
     
-    def end_training(self, final_rmse):
+    def end_training(self, final_rmse, final_mae, total_training_time, test_time):
         try:
+            # Detener el tracker principal y obtener emisiones totales
+            total_emissions_main = 0.0
+            if self.main_tracker:
+                try:
+                    total_emissions_main = self.main_tracker.stop() or 0.0
+                    print(f"Emisiones totales del tracker principal: {total_emissions_main:.8f} kg")
+                except Exception as e:
+                    print(f"Error al detener el tracker principal: {e}")
+            
             # Asegurarse de que todos los trackers estén detenidos
             for epoch, tracker in self.trackers.items():
                 if tracker is not None:
@@ -92,6 +149,17 @@ class EmissionsPerEpochTracker:
                         tracker.stop()
                     except:
                         pass
+            
+            # Usar las emisiones del tracker principal si están disponibles
+            if total_emissions_main > 0:
+                self.total_emissions = total_emissions_main
+                # Recalcular emisiones acumulativas si es necesario
+                if len(self.cumulative_emissions) > 0:
+                    self.cumulative_emissions[-1] = total_emissions_main
+            
+            # Obtener métricas finales del sistema
+            final_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2  # MB
+            final_cpu = psutil.cpu_percent()
             
             # Crear dataframe con todos los datos
             timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -103,7 +171,11 @@ class EmissionsPerEpochTracker:
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss,
                 'val_loss': self.epoch_val_loss if self.epoch_val_loss else [None] * len(self.epoch_emissions),
-                'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions)
+                'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions),
+                'mae': self.epoch_mae if self.epoch_mae else [None] * len(self.epoch_emissions),
+                'time_sec': self.epoch_times,
+                'memory_mb': self.epoch_memory,
+                'cpu_percent': self.epoch_cpu
             })
             
             # Crear carpetas si no existen
@@ -113,6 +185,37 @@ class EmissionsPerEpochTracker:
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
             df.to_csv(emissions_file, index=False)
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
+            
+            # Imprimir resumen final como el solicitado
+            print("\n=== Final Training Metrics ===")
+            for i, row in df.iterrows():
+                print(f"Epoch {int(row['epoch'])-1}: Time={row['time_sec']:.2f}s, "
+                      f"Memory={row['memory_mb']:.2f}MB, CPU={row['cpu_percent']:.1f}%, "
+                      f"RMSE={row['rmse']:.4f}, MAE={row['mae']:.4f}")
+            
+            print("\n=== Final Test Metrics ===")
+            print(f"Total Time: {total_training_time:.2f}s (Test: {test_time:.2f}s)")
+            print(f"Final Memory: {final_memory:.2f}MB")
+            print(f"Final CPU: {final_cpu:.1f}%")
+            print(f"Total CO2 Emissions: {self.total_emissions:.8f} kg")
+            print(f"RMSE: {final_rmse:.4f}")
+            print(f"MAE: {final_mae:.4f}")
+            
+            # Mostrar información del mejor RMSE durante el entrenamiento
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best Training RMSE ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch + 1})")
+                if self.best_rmse_metrics:
+                    print(f"Time: {self.best_rmse_metrics['time']:.2f}s")
+                    print(f"Memory: {self.best_rmse_metrics['memory']:.2f}MB")
+                    print(f"CPU: {self.best_rmse_metrics['cpu']:.1f}%")
+                    if self.best_rmse_metrics['mae'] is not None:
+                        print(f"MAE: {self.best_rmse_metrics['mae']:.4f}")
+                
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch + 1})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
             
             # Graficar las relaciones
             self.plot_emissions_vs_metrics(epochs_range, timestamp, final_rmse)
@@ -127,16 +230,16 @@ class EmissionsPerEpochTracker:
         
         try:
             # 1. Gráfico combinado: Emisiones por época y acumulativas
-            plt.figure(figsize=(12, 10))
+            plt.figure(figsize=(15, 12))
             
-            plt.subplot(2, 2, 1)
+            plt.subplot(3, 3, 1)
             plt.plot(epochs_range, self.epoch_emissions, 'r-', marker='x')
             plt.title('Emisiones por Época')
             plt.xlabel('Época')
             plt.ylabel('CO₂ Emissions (kg)')
             plt.grid(True, alpha=0.3)
             
-            plt.subplot(2, 2, 2)
+            plt.subplot(3, 3, 2)
             plt.plot(epochs_range, self.cumulative_emissions, 'r-', marker='o')
             plt.title('Emisiones Acumuladas por Época')
             plt.xlabel('Época')
@@ -144,7 +247,7 @@ class EmissionsPerEpochTracker:
             plt.grid(True, alpha=0.3)
             
             if self.epoch_loss:
-                plt.subplot(2, 2, 3)
+                plt.subplot(3, 3, 3)
                 plt.plot(epochs_range, self.epoch_loss, 'g-', marker='o', label='Train Loss')
                 if self.epoch_val_loss:
                     plt.plot(epochs_range, self.epoch_val_loss, 'b-', marker='x', label='Val Loss')
@@ -155,11 +258,43 @@ class EmissionsPerEpochTracker:
                 plt.grid(True, alpha=0.3)
             
             if self.epoch_rmse:
-                plt.subplot(2, 2, 4)
+                plt.subplot(3, 3, 4)
                 plt.plot(epochs_range, self.epoch_rmse, 'b-', marker='o')
                 plt.title('RMSE por Época')
                 plt.xlabel('Época')
                 plt.ylabel('RMSE')
+                plt.grid(True, alpha=0.3)
+            
+            if self.epoch_mae:
+                plt.subplot(3, 3, 5)
+                plt.plot(epochs_range, self.epoch_mae, 'm-', marker='s')
+                plt.title('MAE por Época')
+                plt.xlabel('Época')
+                plt.ylabel('MAE')
+                plt.grid(True, alpha=0.3)
+            
+            if self.epoch_times:
+                plt.subplot(3, 3, 6)
+                plt.plot(epochs_range, self.epoch_times, 'orange', marker='d')
+                plt.title('Tiempo por Época')
+                plt.xlabel('Época')
+                plt.ylabel('Tiempo (s)')
+                plt.grid(True, alpha=0.3)
+            
+            if self.epoch_memory:
+                plt.subplot(3, 3, 7)
+                plt.plot(epochs_range, self.epoch_memory, 'purple', marker='^')
+                plt.title('Memoria por Época')
+                plt.xlabel('Época')
+                plt.ylabel('Memoria (MB)')
+                plt.grid(True, alpha=0.3)
+            
+            if self.epoch_cpu:
+                plt.subplot(3, 3, 8)
+                plt.plot(epochs_range, self.epoch_cpu, 'brown', marker='v')
+                plt.title('CPU por Época')
+                plt.xlabel('Época')
+                plt.ylabel('CPU (%)')
                 plt.grid(True, alpha=0.3)
             
             plt.tight_layout()
@@ -301,20 +436,32 @@ class TrackingCallback(tf.keras.callbacks.Callback):
         self.emissions_tracker = emissions_tracker
         self.val_X, self.val_y = val_data
         
+    def on_train_begin(self, logs=None):
+        self.emissions_tracker.train_start_time = time.time()
+        # Iniciar el tracker principal
+        try:
+            self.emissions_tracker.main_tracker.start()
+            print("Tracker principal de emisiones iniciado")
+        except Exception as e:
+            print(f"Advertencia: No se pudo iniciar el tracker principal: {e}")
+            self.emissions_tracker.main_tracker = None
+        
     def on_epoch_begin(self, epoch, logs=None):
         self.emissions_tracker.start_epoch(epoch)
         
     def on_epoch_end(self, epoch, logs=None):
-        # Calcular RMSE en el conjunto de validación
+        # Calcular RMSE y MAE en el conjunto de validación
         y_pred = self.model.predict(self.val_X, verbose=0)
         val_rmse = mean_squared_error(self.val_y, y_pred.flatten(), squared=False)
+        val_mae = mean_absolute_error(self.val_y, y_pred.flatten())
         
         # Registrar métricas y emisiones
         self.emissions_tracker.end_epoch(
             epoch, 
             logs.get('loss'), 
             logs.get('val_loss'),
-            val_rmse
+            val_rmse,
+            val_mae
         )
 
 # 9. Dividir los datos de entrenamiento para validación
@@ -338,16 +485,19 @@ history = model.fit(
 
 # 12. Evaluar el modelo final
 print("Realizando predicciones finales...")
+test_start_time = time.time()
 y_pred = model.predict(X_test_scaled)
+test_time = time.time() - test_start_time
+
+# Calcular tiempo total de entrenamiento
+total_training_time = time.time() - emissions_tracker.train_start_time
 
 # 13. Evaluar el modelo con métricas finales
 rmse = mean_squared_error(y_test, y_pred.flatten(), squared=False)
 mae = mean_absolute_error(y_test, y_pred.flatten())
-r2 = r2_score(y_test, y_pred.flatten())
 
 print(f"RMSE final: {rmse}")
 print(f"MAE final: {mae}")
-print(f"R² final: {r2}")
 
 # 14. Generar gráficos finales de emisiones vs. rendimiento
-emissions_tracker.end_training(rmse)
+emissions_tracker.end_training(rmse, mae, total_training_time, test_time)

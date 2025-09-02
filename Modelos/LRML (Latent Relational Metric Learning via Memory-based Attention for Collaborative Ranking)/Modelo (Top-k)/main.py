@@ -36,6 +36,8 @@ np.random.seed(42)
 
 # Parsear valores de K para las métricas
 top_k_values = [int(k) for k in args.top_k_values.split(',')]
+# Asegurar que tenemos los valores específicos que necesitamos
+top_k_values = [5, 10, 20, 50]
 
 
 # Clase para seguimiento de métricas del sistema
@@ -44,6 +46,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -59,6 +64,11 @@ class SystemMetricsTracker:
         self.current_epoch_metrics['loss'] = loss
         if rmse is not None:
             self.current_epoch_metrics['rmse'] = rmse
+            # Rastrear el mejor RMSE
+            if rmse < self.best_rmse:
+                self.best_rmse = rmse
+                self.best_rmse_epoch = epoch
+                self.best_rmse_metrics = self.current_epoch_metrics.copy()
         if recall is not None:
             for k, value in recall.items():
                 self.current_epoch_metrics[f'recall@{k}'] = value
@@ -67,21 +77,6 @@ class SystemMetricsTracker:
                 self.current_epoch_metrics[f'ndcg@{k}'] = value
             
         self.train_metrics.append(self.current_epoch_metrics)
-        
-        # Imprimir resumen de época
-        print(f"\nEpoch {epoch+1} Metrics:")
-        print(f"  Time: {epoch_time:.2f}s")
-        print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
-        print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
-        print(f"  Loss: {loss:.4f}")
-        if rmse is not None:
-            print(f"  RMSE: {rmse:.4f}")
-        if recall is not None:
-            for k, value in recall.items():
-                print(f"  Recall@{k}: {value:.4f}")
-        if ndcg is not None:
-            for k, value in ndcg.items():
-                print(f"  NDCG@{k}: {value:.4f}")
         
     def end_test(self, rmse, recall=None, ndcg=None):
         self.test_metrics = {
@@ -103,27 +98,39 @@ class SystemMetricsTracker:
         # Imprimir métricas finales
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']+1}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Loss={m['loss']:.4f}"
-            if 'rmse' in m:
-                metrics_str += f", RMSE={m['rmse']:.4f}"
-            for k in top_k_values:
-                if f'recall@{k}' in m:
-                    metrics_str += f", Recall@{k}={m[f'recall@{k}']:.4f}"
-                if f'ndcg@{k}' in m:
-                    metrics_str += f", NDCG@{k}={m[f'ndcg@{k}']:.4f}"
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, RMSE={m['rmse']:.4f}"
+            # Solo mostrar métricas para @5 y @10 en el resumen de entrenamiento
+            if 'recall@5' in m:
+                metrics_str += f", Recall@5={m['recall@5']:.4f}"
+            if 'recall@10' in m:
+                metrics_str += f", Recall@10={m['recall@10']:.4f}"
+            if 'ndcg@5' in m:
+                metrics_str += f", NDCG@5={m['ndcg@5']:.4f}"
+            if 'ndcg@10' in m:
+                metrics_str += f", NDCG@10={m['ndcg@10']:.4f}"
             print(metrics_str)
         
         print("\n=== Final Test Metrics ===")
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test RMSE: {rmse:.4f}")
+        print(f"RMSE: {rmse:.4f}")
         if recall is not None:
-            for k, value in recall.items():
-                print(f"Test Recall@{k}: {value:.4f}")
+            for k in [5, 10, 20, 50]:
+                if k in recall:
+                    print(f"Recall@{k}: {recall[k]:.4f}")
         if ndcg is not None:
-            for k, value in ndcg.items():
-                print(f"Test NDCG@{k}: {value:.4f}")
+            for k in [5, 10, 20, 50]:
+                if k in ndcg:
+                    print(f"NDCG@{k}: {ndcg[k]:.4f}")
+        
+        # Mostrar información del mejor RMSE
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+            print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+            print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -144,6 +151,12 @@ class EmissionsPerEpochTracker:
         self.epoch_loss = []
         self.total_emissions = 0.0
         self.trackers = {}
+        
+        # Variables para rastrear el mejor RMSE y sus emisiones
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Inicializar estructuras para métricas top-k
         for k in top_k_values:
@@ -211,6 +224,12 @@ class EmissionsPerEpochTracker:
                 
             if rmse is not None:
                 self.epoch_rmse.append(rmse)
+                # Rastrear el mejor RMSE y sus emisiones
+                if rmse < self.best_rmse:
+                    self.best_rmse = rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
             
             if recall is not None:
                 for k, value in recall.items():
@@ -246,6 +265,13 @@ class EmissionsPerEpochTracker:
                         tracker.stop()
                     except:
                         pass
+            
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
             
             # Si no hay datos de emisiones por época pero tenemos emisiones totales,
             # crear al menos una entrada para gráficos
@@ -499,77 +525,124 @@ def calculate_rmse(model, sess, test_data):
 
 
 # Función para calcular métricas de ranking (Recall@K y NDCG@K)
-def calculate_topk_metrics(model, sess, test_data, user_positive_items, all_item_ids, k_values=[5, 10, 20], max_users=50):
-    """Calcula métricas Top-K para diferentes valores de K"""
-    # Extraer usuarios únicos de test data
-    test_users = set([x[0] for x in test_data])
+def calculate_topk_metrics(model, sess, test_data, user_positive_items, all_item_ids, k_values=[5, 10, 20, 50], max_users=100):
+    """Calcula métricas Top-K para diferentes valores de K de manera más eficiente"""
     
-    # Limitar número de usuarios a evaluar para eficiencia
-    if len(test_users) > max_users:
-        test_users = random.sample(list(test_users), max_users)
+    # Agrupar datos de test por usuario
+    user_test_items = defaultdict(list)
+    for user_idx, item_idx, rating in test_data:
+        # Considerar como relevante si rating normalizado > 0.6 (equivale a rating original > 3.5)
+        if rating > 0.6:
+            user_test_items[user_idx].append(item_idx)
     
-    # Diccionarios para almacenar métricas
-    recall_at_k = {k: [] for k in k_values}
-    ndcg_at_k = {k: [] for k in k_values}
+    # Filtrar usuarios que tienen al menos un ítem relevante
+    users_with_relevant_items = [u for u, items in user_test_items.items() if len(items) > 0]
     
-    print(f"Evaluando métricas top-k para {len(test_users)} usuarios...")
+    if len(users_with_relevant_items) == 0:
+        print("¡Advertencia! No hay usuarios con ítems relevantes en test.")
+        return {k: 0.0 for k in k_values}, {k: 0.0 for k in k_values}
     
-    for user_idx in test_users:
-        # Ítems relevantes (rating > 0.6) para este usuario en test
-        relevant_items = [item for user, item, rating in test_data 
-                         if user == user_idx and rating > 0.6]
+    # Limitar número de usuarios para evaluación
+    if len(users_with_relevant_items) > max_users:
+        users_to_evaluate = random.sample(users_with_relevant_items, max_users)
+    else:
+        users_to_evaluate = users_with_relevant_items
+    
+    print(f"Evaluando métricas top-k para {len(users_to_evaluate)} usuarios...")
+    
+    # Diccionarios para acumular métricas
+    recall_scores = {k: [] for k in k_values}
+    ndcg_scores = {k: [] for k in k_values}
+    
+    processed_users = 0
+    for user_idx in users_to_evaluate:
+        relevant_items = set(user_test_items[user_idx])
         
-        if not relevant_items:
+        if len(relevant_items) == 0:
             continue
         
-        # Todos los ítems excepto los que el usuario ya ha valorado positivamente en training
-        items_to_rank = list(set(all_item_ids) - set(user_positive_items.get(user_idx, [])))
+        # Obtener ítems que el usuario no ha valorado en entrenamiento (candidatos)
+        user_train_items = user_positive_items.get(user_idx, set())
+        candidate_items = list(set(all_item_ids) - user_train_items)
         
-        # Si hay demasiados ítems, limitar para eficiencia
-        max_items = 1000
-        if len(items_to_rank) > max_items:
-            items_to_rank = random.sample(items_to_rank, max_items - len(relevant_items))
-            # Asegurarnos de incluir los ítems relevantes
-            items_to_rank.extend(relevant_items)
+        # Si hay demasiados candidatos, limitar para eficiencia pero incluir ítems relevantes
+        max_candidates = 1000
+        if len(candidate_items) > max_candidates:
+            # Asegurar que todos los ítems relevantes estén incluidos
+            relevant_candidates = [item for item in relevant_items if item in candidate_items]
+            other_candidates = [item for item in candidate_items if item not in relevant_items]
+            
+            remaining_slots = max_candidates - len(relevant_candidates)
+            if remaining_slots > 0 and len(other_candidates) > remaining_slots:
+                other_candidates = random.sample(other_candidates, remaining_slots)
+            
+            candidate_items = relevant_candidates + other_candidates
         
-        users = [user_idx] * len(items_to_rank)
+        if len(candidate_items) == 0:
+            continue
         
-        # Obtener predicciones para todos los ítems
+        # Generar predicciones para todos los candidatos
+        users_batch = [user_idx] * len(candidate_items)
+        
         feed_dict = {
-            model.user_input: users,
-            model.item_input: items_to_rank,
+            model.user_input: users_batch,
+            model.item_input: candidate_items,
             model.dropout: 1.0
         }
         
-        predictions = sess.run(model.predict_op, feed_dict=feed_dict).flatten()
+        try:
+            predictions = sess.run(model.predict_op, feed_dict=feed_dict).flatten()
+        except Exception as e:
+            print(f"Error al obtener predicciones para usuario {user_idx}: {e}")
+            continue
         
-        # Ordenar ítems por predicción en orden descendente
-        item_score_pairs = sorted(list(zip(items_to_rank, predictions)), 
-                                 key=lambda x: x[1], reverse=True)
+        # Crear pares (ítem, predicción) y ordenar por predicción descendente
+        item_pred_pairs = list(zip(candidate_items, predictions))
+        item_pred_pairs.sort(key=lambda x: x[1], reverse=True)
         
         # Calcular métricas para cada K
         for k in k_values:
-            top_k_items = [x[0] for x in item_score_pairs[:k]]
+            top_k_items = [item for item, _ in item_pred_pairs[:k]]
             
             # Recall@K
-            hits = len(set(top_k_items) & set(relevant_items))
+            hits = len(relevant_items.intersection(set(top_k_items)))
             recall = hits / len(relevant_items)
-            recall_at_k[k].append(recall)
+            recall_scores[k].append(recall)
             
             # NDCG@K
-            dcg = 0
+            dcg = 0.0
             for i, item in enumerate(top_k_items):
                 if item in relevant_items:
-                    dcg += 1 / math.log2(i + 2)  # posición i+2 porque i empieza en 0
+                    # DCG: usar log2(i+2) porque la posición es i+1 (1-indexed)
+                    dcg += 1.0 / math.log2(i + 2)
             
-            # IDCG - valor ideal de DCG
-            idcg = sum(1 / math.log2(i + 2) for i in range(min(k, len(relevant_items))))
-            ndcg = dcg / idcg if idcg > 0 else 0
-            ndcg_at_k[k].append(ndcg)
+            # IDCG: DCG ideal (asumir que todos los ítems relevantes están en top-k)
+            idcg = 0.0
+            relevant_count = min(k, len(relevant_items))
+            for i in range(relevant_count):
+                idcg += 1.0 / math.log2(i + 2)
+            
+            ndcg = dcg / idcg if idcg > 0 else 0.0
+            ndcg_scores[k].append(ndcg)
+        
+        processed_users += 1
+        if processed_users % 20 == 0:
+            print(f"  Procesados {processed_users}/{len(users_to_evaluate)} usuarios")
     
-    # Promediar las métricas
-    avg_recall = {k: np.mean(scores) for k, scores in recall_at_k.items() if scores}
-    avg_ndcg = {k: np.mean(scores) for k, scores in ndcg_at_k.items() if scores}
+    # Calcular promedios
+    avg_recall = {}
+    avg_ndcg = {}
+    
+    for k in k_values:
+        if recall_scores[k]:
+            avg_recall[k] = np.mean(recall_scores[k])
+        else:
+            avg_recall[k] = 0.0
+            
+        if ndcg_scores[k]:
+            avg_ndcg[k] = np.mean(ndcg_scores[k])
+        else:
+            avg_ndcg[k] = 0.0
     
     return avg_recall, avg_ndcg
 
@@ -815,7 +888,7 @@ def main():
             
             # Calcular métricas top-K
             recall_dict, ndcg_dict = calculate_topk_metrics(
-                model, sess, eval_sample, user_pos_items_dict, all_item_ids, top_k_values
+                model, sess, eval_sample, user_pos_items_dict, all_item_ids, top_k_values, max_users=50
             )
             
             for k, value in recall_dict.items():
@@ -878,21 +951,10 @@ def main():
         # Calcular RMSE final
         final_rmse = calculate_rmse(model, sess, final_test_sample)
         
-        # Calcular métricas top-K finales
+        # Calcular métricas top-K finales con más usuarios para mejor estimación
         final_recall, final_ndcg = calculate_topk_metrics(
-            model, sess, final_test_sample, user_pos_items_dict, all_item_ids, top_k_values, max_users=100
+            model, sess, final_test_sample, user_pos_items_dict, all_item_ids, top_k_values, max_users=150
         )
-        
-        # Imprimir métricas finales
-        print("\n=========== MÉTRICAS FINALES ===========")
-        print(f"RMSE: {final_rmse:.4f}")
-        for k, value in final_recall.items():
-            print(f"Recall@{k}: {value:.4f}")
-        for k, value in final_ndcg.items():
-            print(f"NDCG@{k}: {value:.4f}")
-        
-        # Métricas del sistema
-        memory_usage = process.memory_info().rss / (1024 * 1024)  # En MB
         
         # Finalizar tracking
         system_tracker.end_test(final_rmse, final_recall, final_ndcg)
@@ -910,8 +972,7 @@ def main():
         metrics_dict = {
             'model': ['LRML_TopK'],
             'final_rmse': [final_rmse],
-            'total_time_seconds': [total_time],
-            'memory_usage_mb': [memory_usage]
+            'total_time_seconds': [total_time]
         }
         
         # Añadir métricas top-K

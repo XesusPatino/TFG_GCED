@@ -8,83 +8,8 @@ import matplotlib.pyplot as plt
 import os
 import time
 import psutil
+import traceback
 from sklearn.metrics import mean_squared_error
-# from train import get_feed_dict, get_interaction_table
-
-
-# Función para hacer inferencia (predicciones) con un modelo guardado
-def inference(model_path, data, user_item_pairs):
-    """
-    Realiza predicciones para pares usuario-ítem usando un modelo KGNN-LS guardado
-    
-    Args:
-        model_path: Ruta al modelo guardado
-        data: Datos del grafo de conocimiento y usuarios
-        user_item_pairs: Lista de tuplas (user_id, item_id) para predecir
-    
-    Returns:
-        numpy.array: Array con las puntuaciones predichas
-    """
-    n_user, n_item, n_entity, n_relation = data[0], data[1], data[2], data[3]
-    adj_entity, adj_relation = data[7], data[8]
-    
-    # Preparar datos para inferencia
-    inference_data = np.array([[pair[0], pair[1], 0.0] for pair in user_item_pairs])
-    
-    # Crear tabla de interacción vacía (no la necesitamos para inferencia)
-    interaction_table, offset = get_interaction_table(data[4], n_entity)
-    
-    # Reconstruir el modelo con los parámetros adecuados
-    # Creamos un diccionario de args simulado con los valores por defecto
-    class Args:
-        def __init__(self):
-            self.neighbor_sample_size = 16
-            self.dim = 32
-            self.n_iter = 1
-            self.batch_size = 128
-            self.l2_weight = 1e-7
-            self.ls_weight = 1.0
-            self.lr = 2e-2
-    
-    args = Args()
-    model = KGNN_LS(args, n_user, n_entity, n_relation, adj_entity, adj_relation, interaction_table, offset)
-    
-    print(f"Realizando inferencia para {len(user_item_pairs)} pares usuario-ítem...")
-    
-    with tf.compat.v1.Session() as sess:
-        # Inicializar todas las variables
-        sess.run(tf.compat.v1.global_variables_initializer())
-        sess.run(tf.compat.v1.tables_initializer())  # Inicializar la tabla hash
-        
-        # Cargar el modelo guardado
-        if os.path.exists(f"{model_path}.meta"):
-            # Cargar el modelo
-            saver = tf.compat.v1.train.Saver()
-            saver.restore(sess, model_path)
-            print(f"Modelo cargado desde: {model_path}")
-        else:
-            print(f"ADVERTENCIA: No se encontró un modelo guardado en {model_path}")
-            print("Realizando predicciones con un modelo no entrenado")
-        
-        # Realizar predicciones en lotes
-        start = 0
-        batch_size = args.batch_size
-        all_scores = []
-        
-        while start < inference_data.shape[0]:
-            end = min(start + batch_size, inference_data.shape[0])
-            feed_dict = get_feed_dict(model, inference_data, start, end)
-            _, scores = model.get_scores(sess, feed_dict)
-            all_scores.extend(scores)
-            start = end
-            
-            # Mostrar progreso
-            if start % (batch_size * 10) == 0 and start > 0:
-                print(f"  Procesados {start}/{inference_data.shape[0]} pares")
-        
-        print("Inferencia completada.")
-        
-    return np.array(all_scores)
 
 
 # Añadir función para calcular RMSE
@@ -107,16 +32,142 @@ def calculate_rmse(y_true, y_pred, mask=None):
         return np.sqrt(mean_squared_error(y_true[mask], y_pred[mask]))
 
 
+# Añadir función para calcular MAE
+def calculate_mae(y_true, y_pred, mask=None):
+    """
+    Calcula el MAE entre las etiquetas verdaderas y predichas
+    
+    Args:
+        y_true: Valores reales
+        y_pred: Valores predichos
+        mask: Máscara opcional para filtrar valores
+    
+    Returns:
+        Valor MAE
+    """
+    if mask is None:
+        return np.mean(np.abs(y_true - y_pred))
+    else:
+        # Solo considerar elementos donde mask=True
+        return np.mean(np.abs(y_true[mask] - y_pred[mask]))
+
+
 # Añadir función para calcular RMSE en un batch
 def calculate_rmse_for_batch(sess, model, data, start, end):
     """
-    Calcula RMSE para un batch específico
+    Calcula RMSE para un batch específico usando predicciones en escala 1-5
     """
     feed_dict = get_feed_dict(model, data, start, end)
-    # Obtener las puntuaciones (raw scores) para calcular RMSE
-    _, scores = model.get_scores(sess, feed_dict)
+    # Obtener las puntuaciones normalizadas (1-5) para calcular RMSE
+    scores_normalized = sess.run(model.scores_normalized, feed_dict)
     true_labels = data[start:end, 2]
-    return calculate_rmse(true_labels, scores)
+    return calculate_rmse(true_labels, scores_normalized)
+
+
+# Añadir función para calcular MAE en un batch
+def calculate_mae_for_batch(sess, model, data, start, end):
+    """
+    Calcula MAE para un batch específico usando predicciones en escala 1-5
+    """
+    feed_dict = get_feed_dict(model, data, start, end)
+    # Obtener las puntuaciones normalizadas (1-5) para calcular MAE
+    scores_normalized = sess.run(model.scores_normalized, feed_dict)
+    true_labels = data[start:end, 2]
+    return calculate_mae(true_labels, scores_normalized)
+
+
+class SystemMetricsTracker:
+    def __init__(self):
+        self.train_metrics = []
+        self.test_metrics = {}
+        self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
+        
+    def start_epoch(self, epoch):
+        self.epoch_start_time = time.time()
+        self.current_epoch_metrics = {
+            'epoch': epoch,
+            'memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
+            'cpu_usage_percent': psutil.cpu_percent(),
+        }
+        
+    def end_epoch(self, epoch, loss, rmse=None, mae=None):
+        epoch_time = time.time() - self.epoch_start_time
+        self.current_epoch_metrics['epoch_time_sec'] = epoch_time
+        self.current_epoch_metrics['loss'] = loss
+        if rmse is not None:
+            self.current_epoch_metrics['rmse'] = rmse
+        if mae is not None:
+            self.current_epoch_metrics['mae'] = mae
+        self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if rmse is not None and rmse < self.best_rmse:
+            self.best_rmse = rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
+        
+        # Print epoch summary
+        print(f"\nEpoch {epoch} Metrics:")
+        print(f"  Time: {epoch_time:.2f}s")
+        print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
+        print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
+        print(f"  Loss: {loss:.4f}")
+        if rmse is not None:
+            print(f"  RMSE: {rmse:.4f}")
+        if mae is not None:
+            print(f"  MAE: {mae:.4f}")
+
+    def end_test(self, rmse=None, mae=None):
+        self.test_metrics = {
+            'test_time_sec': time.time() - self.epoch_start_time,
+            'total_time_sec': time.time() - self.start_time,
+            'final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
+            'final_cpu_usage_percent': psutil.cpu_percent()
+        }
+        
+        if rmse is not None:
+            self.test_metrics['test_rmse'] = rmse
+            
+        if mae is not None:
+            self.test_metrics['test_mae'] = mae
+        
+        # Print final metrics - formato como el ejemplo que proporcionaste
+        print("\n=== Final Training Metrics ===")
+        for m in self.train_metrics:
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%"
+            if 'rmse' in m:
+                metrics_str += f", RMSE={m['rmse']:.4f}"
+            if 'mae' in m:
+                metrics_str += f", MAE={m['mae']:.4f}"
+            print(metrics_str)
+        
+        print("\n=== Final Test Metrics ===")
+        print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
+        print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
+        print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
+        if rmse is not None:
+            print(f"RMSE: {rmse:.4f}")
+        if mae is not None:
+            print(f"MAE: {mae:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
+                if 'mae' in self.best_rmse_metrics and self.best_rmse_metrics['mae'] is not None:
+                    print(f"MAE: {self.best_rmse_metrics['mae']:.4f}")
+        
+        # Save metrics to CSV
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        metrics_df = pd.DataFrame(self.train_metrics)
+        metrics_df.to_csv(f"./results/system_metrics_{timestamp}.csv", index=False)
 
 
 class EmissionsPerEpochTracker:
@@ -125,13 +176,15 @@ class EmissionsPerEpochTracker:
         self.model_name = model_name
         self.epoch_emissions = []
         self.cumulative_emissions = []
-        self.epoch_auc = []
-        self.epoch_f1 = []
         self.epoch_loss = []
-        self.epoch_rmse = []  # Añadir lista para RMSE
-        self.epoch_recall = []  # Añadir lista para Recall
+        self.epoch_rmse = []  # Lista para RMSE
+        self.epoch_mae = []   # Lista para MAE (reemplaza F1 y Recall)
         self.total_emissions = 0.0
         self.trackers = {}
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Create directories for emissions reports and plots
         os.makedirs(f"{result_path}", exist_ok=True)
@@ -175,7 +228,7 @@ class EmissionsPerEpochTracker:
             print(f"Warning: Could not start tracker for epoch {epoch}: {e}")
             self.trackers[epoch] = None
 
-    def end_epoch(self, epoch, loss, auc=None, f1=None, rmse=None, recall=None):  # Añadir parámetro recall
+    def end_epoch(self, epoch, loss, rmse=None, mae=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -192,28 +245,26 @@ class EmissionsPerEpochTracker:
             self.epoch_emissions.append(epoch_co2)
             self.cumulative_emissions.append(self.total_emissions)
             self.epoch_loss.append(loss)
-            if auc is not None:
-                self.epoch_auc.append(auc)
-            if f1 is not None:
-                self.epoch_f1.append(f1)
             if rmse is not None:
                 self.epoch_rmse.append(rmse)
-            if recall is not None:
-                self.epoch_recall.append(recall)
+                # Rastrear el mejor RMSE y sus emisiones
+                if rmse < self.best_rmse:
+                    self.best_rmse = rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
+            if mae is not None:
+                self.epoch_mae.append(mae)
             
             print(f"Epoch {epoch} - Emissions: {epoch_co2:.8f} kg, Cumulative: {self.total_emissions:.8f} kg, Loss: {loss:.4f}")
-            if auc is not None:
-                print(f"AUC: {auc:.4f}")
-            if f1 is not None:
-                print(f"F1: {f1:.4f}")
             if rmse is not None:
                 print(f"RMSE: {rmse:.4f}")
-            if recall is not None:
-                print(f"Recall: {recall:.4f}")
+            if mae is not None:
+                print(f"MAE: {mae:.4f}")
         except Exception as e:
             print(f"Error measuring emissions in epoch {epoch}: {e}")
 
-    def end_training(self, final_auc=None, final_f1=None, final_rmse=None, final_recall=None):  # Añadir parámetro final_recall
+    def end_training(self, final_rmse=None, final_mae=None):
         try:
             # Stop the main tracker
             final_emissions = 0.0
@@ -240,29 +291,21 @@ class EmissionsPerEpochTracker:
             if not self.epoch_emissions and final_emissions > 0:
                 self.epoch_emissions = [final_emissions]
                 self.cumulative_emissions = [final_emissions]
-                if final_auc is not None:
-                    self.epoch_auc = [final_auc]
-                if final_f1 is not None:
-                    self.epoch_f1 = [final_f1]
                 if final_rmse is not None:
                     self.epoch_rmse = [final_rmse]
-                if final_recall is not None:
-                    self.epoch_recall = [final_recall]
+                if final_mae is not None:
+                    self.epoch_mae = [final_mae]
             
             # If no data, exit
             if not self.epoch_emissions:
                 print("No emission data to plot")
                 return
             
-            # Make sure we have a final AUC if not tracked by epoch
-            if not self.epoch_auc and final_auc is not None:
-                self.epoch_auc = [final_auc] * len(self.epoch_emissions)
-            if not self.epoch_f1 and final_f1 is not None:
-                self.epoch_f1 = [final_f1] * len(self.epoch_emissions)
+            # Make sure we have final metrics if not tracked by epoch
             if not self.epoch_rmse and final_rmse is not None:
                 self.epoch_rmse = [final_rmse] * len(self.epoch_emissions)
-            if not self.epoch_recall and final_recall is not None:
-                self.epoch_recall = [final_recall] * len(self.epoch_emissions)
+            if not self.epoch_mae and final_mae is not None:
+                self.epoch_mae = [final_mae] * len(self.epoch_emissions)
             
             # Create dataframe with all data
             timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -271,78 +314,38 @@ class EmissionsPerEpochTracker:
                 'epoch_emissions_kg': self.epoch_emissions,
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss if self.epoch_loss else [0.0] * len(self.epoch_emissions),
-                'auc': self.epoch_auc if self.epoch_auc else [None] * len(self.epoch_emissions),
-                'f1': self.epoch_f1 if self.epoch_f1 else [None] * len(self.epoch_emissions),
-                'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions),  # Añadir RMSE
-                'recall': self.epoch_recall if self.epoch_recall else [None] * len(self.epoch_emissions)  # Añadir Recall
+                'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions),
+                'mae': self.epoch_mae if self.epoch_mae else [None] * len(self.epoch_emissions)
             })
             
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
             df.to_csv(emissions_file, index=False)
             print(f"Emission metrics saved to: {emissions_file}")
             
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
+            
             # Plot relationships
-            self.plot_emissions_vs_metrics(timestamp, final_auc, final_f1, final_rmse, final_recall)
+            self.plot_emissions_vs_metrics(timestamp, final_rmse, final_mae)
             
         except Exception as e:
             print(f"Error generating emission plots: {e}")
-            import traceback
             traceback.print_exc()
 
-    def plot_emissions_vs_metrics(self, timestamp, final_auc=None, final_f1=None, final_rmse=None, final_recall=None):
+    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None, final_mae=None):
         """Generate plots for emissions vs metrics"""
         
-        # Use AUC by epoch if available, else create list with final AUC
-        if not self.epoch_auc and final_auc is not None:
-            self.epoch_auc = [final_auc] * len(self.epoch_emissions)
-        if not self.epoch_f1 and final_f1 is not None:
-            self.epoch_f1 = [final_f1] * len(self.epoch_emissions)
+        # Use metrics by epoch if available, else create list with final values
         if not self.epoch_rmse and final_rmse is not None:
             self.epoch_rmse = [final_rmse] * len(self.epoch_emissions)
-        if not self.epoch_recall and final_recall is not None:
-            self.epoch_recall = [final_recall] * len(self.epoch_emissions)
+        if not self.epoch_mae and final_mae is not None:
+            self.epoch_mae = [final_mae] * len(self.epoch_emissions)
         
         try:
-            if self.epoch_auc:
-                # 1. Cumulative emissions vs AUC
-                plt.figure(figsize=(10, 6))
-                plt.plot(self.cumulative_emissions, self.epoch_auc, 'b-', marker='o')
-                
-                # Add labels with epoch number
-                for i, (emissions, auc) in enumerate(zip(self.cumulative_emissions, self.epoch_auc)):
-                    plt.annotate(f"{i}", (emissions, auc), textcoords="offset points", 
-                                xytext=(0,10), ha='center', fontsize=9)
-                    
-                plt.xlabel('Cumulative CO2 Emissions (kg)')
-                plt.ylabel('AUC')
-                plt.title('Relationship between Cumulative Emissions and AUC')
-                plt.grid(True, alpha=0.3)
-                
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_auc_{self.model_name}_{timestamp}.png'
-                plt.savefig(file_path)
-                plt.close()
-                print(f"Plot saved to: {file_path}")
-            
-            if self.epoch_f1:
-                # 2. Cumulative emissions vs F1
-                plt.figure(figsize=(10, 6))
-                plt.plot(self.cumulative_emissions, self.epoch_f1, 'g-', marker='o')
-                
-                # Add labels with epoch number
-                for i, (emissions, f1) in enumerate(zip(self.cumulative_emissions, self.epoch_f1)):
-                    plt.annotate(f"{i}", (emissions, f1), textcoords="offset points", 
-                                xytext=(0,10), ha='center', fontsize=9)
-                    
-                plt.xlabel('Cumulative CO2 Emissions (kg)')
-                plt.ylabel('F1 Score')
-                plt.title('Relationship between Cumulative Emissions and F1 Score')
-                plt.grid(True, alpha=0.3)
-                
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_f1_{self.model_name}_{timestamp}.png'
-                plt.savefig(file_path)
-                plt.close()
-                print(f"Plot saved to: {file_path}")
-            
             # RMSE plot
             if self.epoch_rmse:
                 plt.figure(figsize=(10, 6))
@@ -363,76 +366,62 @@ class EmissionsPerEpochTracker:
                 plt.close()
                 print(f"Plot saved to: {file_path}")
                 
-            # Recall plot
-            if self.epoch_recall:
+            # MAE plot
+            if self.epoch_mae:
                 plt.figure(figsize=(10, 6))
-                plt.plot(self.cumulative_emissions, self.epoch_recall, 'c-', marker='o')
+                plt.plot(self.cumulative_emissions, self.epoch_mae, 'c-', marker='o')
                 
                 # Add labels with epoch number
-                for i, (emissions, recall) in enumerate(zip(self.cumulative_emissions, self.epoch_recall)):
-                    plt.annotate(f"{i}", (emissions, recall), textcoords="offset points", 
+                for i, (emissions, mae) in enumerate(zip(self.cumulative_emissions, self.epoch_mae)):
+                    plt.annotate(f"{i}", (emissions, mae), textcoords="offset points", 
                                 xytext=(0,10), ha='center', fontsize=9)
                     
                 plt.xlabel('Cumulative CO2 Emissions (kg)')
-                plt.ylabel('Recall')
-                plt.title('Relationship between Cumulative Emissions and Recall')
+                plt.ylabel('MAE')
+                plt.title('Relationship between Cumulative Emissions and MAE')
                 plt.grid(True, alpha=0.3)
                 
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_recall_{self.model_name}_{timestamp}.png'
+                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_mae_{self.model_name}_{timestamp}.png'
                 plt.savefig(file_path)
                 plt.close()
                 print(f"Plot saved to: {file_path}")
             
-            # 3. Combined plot: Emissions per epoch and cumulative
-            plt.figure(figsize=(15, 10))  # Hacer más grande para incluir recall
+            # Combined plot: Emissions per epoch and cumulative
+            plt.figure(figsize=(12, 8))
             
-            # Configurar el layout para 8 subplots (2 filas, 4 columnas)
-            plt.subplot(2, 4, 1)
+            # Configurar el layout para 5 subplots (2 filas, 3 columnas)
+            plt.subplot(2, 3, 1)
             plt.plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
             plt.title('Emissions per Epoch')
             plt.xlabel('Epoch')
             plt.ylabel('CO2 Emissions (kg)')
             
-            plt.subplot(2, 4, 2)
+            plt.subplot(2, 3, 2)
             plt.plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
             plt.title('Cumulative Emissions per Epoch')
             plt.xlabel('Epoch')
             plt.ylabel('CO2 Emissions (kg)')
             
             if self.epoch_loss:
-                plt.subplot(2, 4, 3)
-                plt.plot(range(len(self.epoch_loss)), self.epoch_loss, 'g-', marker='o')
+                plt.subplot(2, 3, 3)
+                plt.plot(range(len(self.epoch_loss)), self.epoch_loss, 'orange', marker='s')
                 plt.title('Loss per Epoch')
                 plt.xlabel('Epoch')
                 plt.ylabel('Loss')
             
-            if self.epoch_auc:
-                plt.subplot(2, 4, 4)
-                plt.plot(range(len(self.epoch_auc)), self.epoch_auc, 'b-', marker='o')
-                plt.title('AUC per Epoch')
-                plt.xlabel('Epoch')
-                plt.ylabel('AUC')
-            
-            if self.epoch_f1:
-                plt.subplot(2, 4, 5)
-                plt.plot(range(len(self.epoch_f1)), self.epoch_f1, 'g-', marker='o')
-                plt.title('F1 Score per Epoch')
-                plt.xlabel('Epoch')
-                plt.ylabel('F1')
-                
             if self.epoch_rmse:
-                plt.subplot(2, 4, 6)
-                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'm-', marker='o')
+                plt.subplot(2, 3, 4)
+                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
                 plt.title('RMSE per Epoch')
                 plt.xlabel('Epoch')
                 plt.ylabel('RMSE')
                 
-            if self.epoch_recall:
-                plt.subplot(2, 4, 7)
-                plt.plot(range(len(self.epoch_recall)), self.epoch_recall, 'c-', marker='o')
-                plt.title('Recall per Epoch')
+            if self.epoch_mae:
+                plt.subplot(2, 3, 5)
+                plt.plot(range(len(self.epoch_mae)), self.epoch_mae, 'm-', marker='s')
+                plt.title('MAE per Epoch')
                 plt.xlabel('Epoch')
-                plt.ylabel('Recall')
+                plt.ylabel('MAE')
             
             plt.tight_layout()
             
@@ -441,139 +430,51 @@ class EmissionsPerEpochTracker:
             plt.close()
             print(f"Plot saved to: {file_path}")
             
-            # 4. Scatter plot of performance vs cumulative emissions
-            if self.epoch_auc or self.epoch_f1 or self.epoch_rmse or self.epoch_recall:
-                plt.figure(figsize=(10, 6))
+            # Scatter plot of performance vs cumulative emissions
+            if self.epoch_rmse and self.epoch_mae:
+                plt.figure(figsize=(12, 5))
                 
-                # Adjust point size by epoch
+                plt.subplot(1, 2, 1)
+                # Ajustar tamaño de los puntos según la época
                 sizes = [(i+1)*20 for i in range(len(self.cumulative_emissions))]
                 
-                if self.epoch_auc:
-                    plt.scatter(self.epoch_auc, self.cumulative_emissions, 
-                                color='blue', marker='o', s=sizes, alpha=0.7, label='AUC')
+                scatter = plt.scatter(self.epoch_rmse, self.cumulative_emissions, 
+                            color='blue', marker='o', s=sizes, alpha=0.7)
                 
-                if self.epoch_f1:
-                    plt.scatter(self.epoch_f1, self.cumulative_emissions, 
-                                color='green', marker='x', s=sizes, alpha=0.7, label='F1')
-                
-                if self.epoch_rmse:
-                    plt.scatter(self.epoch_rmse, self.cumulative_emissions, 
-                                color='magenta', marker='s', s=sizes, alpha=0.7, label='RMSE')
-                                
-                if self.epoch_recall:
-                    plt.scatter(self.epoch_recall, self.cumulative_emissions, 
-                                color='cyan', marker='^', s=sizes, alpha=0.7, label='Recall')
-                
-                # Add epoch labels for one of the series
-                if self.epoch_auc:
-                    for i, (auc, em) in enumerate(zip(self.epoch_auc, self.cumulative_emissions)):
-                        plt.annotate(f"{i}", (auc, em), textcoords="offset points", 
-                                     xytext=(0,5), ha='center', fontsize=9)
+                # Añadir etiquetas de época
+                for i, (rmse, em) in enumerate(zip(self.epoch_rmse, self.cumulative_emissions)):
+                    plt.annotate(f"{i}", (rmse, em), textcoords="offset points", 
+                                xytext=(0,5), ha='center', fontsize=9)
                 
                 plt.ylabel('Cumulative CO2 Emissions (kg)')
-                plt.xlabel('Performance Metrics')
-                plt.title('Relationship between Performance Metrics and Cumulative Emissions')
+                plt.xlabel('RMSE')
+                plt.title('RMSE vs Cumulative Emissions')
                 plt.grid(True, alpha=0.3)
-                plt.legend()
+                
+                plt.subplot(1, 2, 2)
+                scatter = plt.scatter(self.epoch_mae, self.cumulative_emissions, 
+                            color='green', marker='s', s=sizes, alpha=0.7)
+                
+                # Añadir etiquetas de época
+                for i, (mae, em) in enumerate(zip(self.epoch_mae, self.cumulative_emissions)):
+                    plt.annotate(f"{i}", (mae, em), textcoords="offset points", 
+                                xytext=(0,5), ha='center', fontsize=9)
+                
+                plt.ylabel('Cumulative CO2 Emissions (kg)')
+                plt.xlabel('MAE')
+                plt.title('MAE vs Cumulative Emissions')
+                plt.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
                 
                 file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_performance_scatter_{self.model_name}_{timestamp}.png'
                 plt.savefig(file_path)
                 plt.close()
                 print(f"Plot saved to: {file_path}")
+                
         except Exception as e:
             print(f"Error generating plots: {e}")
-            import traceback
             traceback.print_exc()
-
-
-class SystemMetricsTracker:
-    def __init__(self):
-        self.train_metrics = []
-        self.test_metrics = {}
-        self.start_time = time.time()
-        
-    def start_epoch(self, epoch):
-        self.epoch_start_time = time.time()
-        self.current_epoch_metrics = {
-            'epoch': epoch,
-            'memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
-            'cpu_usage_percent': psutil.cpu_percent(),
-        }
-        
-    def end_epoch(self, epoch, loss, auc=None, f1=None, rmse=None, recall=None):  # Añadir recall
-        epoch_time = time.time() - self.epoch_start_time
-        self.current_epoch_metrics['epoch_time_sec'] = epoch_time
-        self.current_epoch_metrics['loss'] = loss
-        if auc is not None:
-            self.current_epoch_metrics['auc'] = auc
-        if f1 is not None:
-            self.current_epoch_metrics['f1'] = f1
-        if rmse is not None:
-            self.current_epoch_metrics['rmse'] = rmse
-        if recall is not None:
-            self.current_epoch_metrics['recall'] = recall
-        self.train_metrics.append(self.current_epoch_metrics)
-        
-        # Print epoch summary
-        print(f"\nEpoch {epoch} Metrics:")
-        print(f"  Time: {epoch_time:.2f}s")
-        print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
-        print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
-        print(f"  Loss: {loss:.4f}")
-        if auc is not None:
-            print(f"  AUC: {auc:.4f}")
-        if f1 is not None:
-            print(f"  F1: {f1:.4f}")
-        if rmse is not None:
-            print(f"  RMSE: {rmse:.4f}")
-        if recall is not None:
-            print(f"  Recall: {recall:.4f}")
-
-    def end_test(self, auc, f1, rmse=None, recall=None):  # Añadir recall
-        self.test_metrics = {
-            'test_time_sec': time.time() - self.epoch_start_time,
-            'total_time_sec': time.time() - self.start_time,
-            'final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
-            'final_cpu_usage_percent': psutil.cpu_percent(),
-            'test_auc': auc,
-            'test_f1': f1
-        }
-        
-        if rmse is not None:
-            self.test_metrics['test_rmse'] = rmse
-            
-        if recall is not None:
-            self.test_metrics['test_recall'] = recall  # Añadir recall
-        
-        # Print final metrics
-        print("\n=== Final Training Metrics ===")
-        for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Loss={m['loss']:.4f}"
-            if 'auc' in m:
-                metrics_str += f", AUC={m['auc']:.4f}"
-            if 'f1' in m:
-                metrics_str += f", F1={m['f1']:.4f}"
-            if 'rmse' in m:
-                metrics_str += f", RMSE={m['rmse']:.4f}"
-            if 'recall' in m:
-                metrics_str += f", Recall={m['recall']:.4f}"
-            print(metrics_str)
-        
-        print("\n=== Final Test Metrics ===")
-        print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
-        print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
-        print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print_str = f"Test AUC: {auc:.4f}, F1: {f1:.4f}"
-        if recall is not None:
-            print_str += f", Recall: {recall:.4f}"
-        if rmse is not None:
-            print_str += f", RMSE: {rmse:.4f}"
-        print(print_str)
-        
-        # Save metrics to CSV
-        timestamp = time.strftime("%Y%m%d-%H%M%S")
-        metrics_df = pd.DataFrame(self.train_metrics)
-        metrics_df.to_csv(f"./results_history/system_metrics_{timestamp}.csv", index=False)
 
 
 def train(args, data, show_loss, show_topk):
@@ -588,20 +489,14 @@ def train(args, data, show_loss, show_topk):
     
     # Lists to store metrics
     train_loss_list = []
-    train_auc_list = []
-    train_f1_list = []
-    train_recall_list = []  # Nueva lista para recall
-    test_auc_list = []
-    test_f1_list = []
-    test_recall_list = []  # Nueva lista para recall
     train_rmse_list = []  
-    test_rmse_list = []   
+    train_mae_list = []
+    test_rmse_list = []
+    test_mae_list = []
     
     # Variables para almacenar métricas finales
-    final_test_auc = None
-    final_test_f1 = None
-    final_test_recall = None  # Nueva variable para recall final
     final_test_rmse = None
+    final_test_mae = None
 
     try:
         n_user, n_item, n_entity, n_relation = data[0], data[1], data[2], data[3]
@@ -630,8 +525,9 @@ def train(args, data, show_loss, show_topk):
                 epoch_loss = 0.0
                 batch_count = 0
                 
-                # Arrays para acumular predicciones y valores reales para RMSE
+                # Arrays para acumular predicciones y valores reales para RMSE y MAE
                 rmse_values = []
+                mae_values = []
                 
                 # Skip the last incomplete minibatch if its size < batch size
                 print(f"Epoch {step+1}/{args.n_epochs} - Processing batches...")
@@ -639,13 +535,15 @@ def train(args, data, show_loss, show_topk):
                     # Entrenar con el batch actual
                     _, loss = model.train(sess, get_feed_dict(model, train_data, start, start + args.batch_size))
                     
-                    # Calcular RMSE para este batch (solo de vez en cuando para ahorrar tiempo)
+                    # Calcular RMSE y MAE para este batch (solo de vez en cuando para ahorrar tiempo)
                     if batch_count % 5 == 0:
                         try:
                             batch_rmse = calculate_rmse_for_batch(sess, model, train_data, start, start + args.batch_size)
+                            batch_mae = calculate_mae_for_batch(sess, model, train_data, start, start + args.batch_size)
                             rmse_values.append(batch_rmse)
+                            mae_values.append(batch_mae)
                         except Exception as e:
-                            print(f"  Error calculating batch RMSE: {e}")
+                            print(f"  Error calculating batch metrics: {e}")
                     
                     start += args.batch_size
                     epoch_loss += loss
@@ -654,31 +552,23 @@ def train(args, data, show_loss, show_topk):
                     if show_loss and batch_count % 5 == 0:
                         print(f"  Batch {batch_count}: Loss: {loss:.4f}")
                 
-                # Calculate average loss and RMSE
+                # Calculate average loss, RMSE and MAE
                 avg_loss = epoch_loss / (batch_count if batch_count > 0 else 1)
                 train_loss_list.append(avg_loss)
                 
-                # Calcular RMSE promedio si tenemos valores
+                # Calcular RMSE y MAE promedio si tenemos valores
                 train_rmse = float(np.mean(rmse_values)) if rmse_values else None
+                train_mae = float(np.mean(mae_values)) if mae_values else None
+                
                 if train_rmse is not None:
                     train_rmse_list.append(train_rmse)
-                    print(f"  Train RMSE: {train_rmse:.4f}")
+                if train_mae is not None:
+                    train_mae_list.append(train_mae)
 
-                # Evaluation
-                train_auc, train_f1, train_recall, train_precision = ctr_eval_with_recall(sess, model, train_data, args.batch_size)
-                train_auc_list.append(train_auc)
-                train_f1_list.append(train_f1)
-                train_recall_list.append(train_recall)
-                
-                eval_auc, eval_f1, eval_recall, eval_precision = ctr_eval_with_recall(sess, model, eval_data, args.batch_size)
-                test_auc, test_f1, test_recall, test_precision = ctr_eval_with_recall(sess, model, test_data, args.batch_size)
-                test_auc_list.append(test_auc)
-                test_f1_list.append(test_f1)
-                test_recall_list.append(test_recall)
-                
-                # Calcular RMSE en datos de test
+                # Calcular RMSE y MAE en datos de test
                 try:
                     test_rmse_values = []
+                    test_mae_values = []
                     test_start = 0
                     # Solo usar una muestra de los datos de prueba para ahorrar tiempo
                     sample_size = min(10000, test_data.shape[0])
@@ -686,30 +576,42 @@ def train(args, data, show_loss, show_topk):
                     
                     while test_start + args.batch_size <= test_sample.shape[0]:
                         test_batch_rmse = calculate_rmse_for_batch(sess, model, test_sample, test_start, test_start + args.batch_size)
+                        test_batch_mae = calculate_mae_for_batch(sess, model, test_sample, test_start, test_start + args.batch_size)
                         test_rmse_values.append(test_batch_rmse)
+                        test_mae_values.append(test_batch_mae)
                         test_start += args.batch_size
                     
-                    if test_rmse_values:
-                        test_rmse = float(np.mean(test_rmse_values))
+                    test_rmse = float(np.mean(test_rmse_values)) if test_rmse_values else None
+                    test_mae = float(np.mean(test_mae_values)) if test_mae_values else None
+                    
+                    if test_rmse is not None:
                         test_rmse_list.append(test_rmse)
-                        print(f"  Test RMSE: {test_rmse:.4f}")
-                    else:
-                        test_rmse = None
+                    if test_mae is not None:
+                        test_mae_list.append(test_mae)
+                        
                 except Exception as e:
-                    print(f"  Error calculating test RMSE: {e}")
+                    print(f"  Error calculating test metrics: {e}")
                     test_rmse = None
+                    test_mae = None
 
                 # End epoch tracking
-                system_tracker.end_epoch(step, avg_loss, eval_auc, eval_f1, train_rmse, train_recall)  # Añadir train_recall
-                emissions_tracker.end_epoch(step, avg_loss, eval_auc, eval_f1, train_rmse, train_recall)  # Añadir train_recall
+                system_tracker.end_epoch(step, avg_loss, train_rmse, train_mae)
+                emissions_tracker.end_epoch(step, avg_loss, train_rmse, train_mae)
                 
-                # Imprimir resultados incluyendo RMSE
-                print('epoch %d    train auc: %.4f  f1: %.4f  recall: %.4f  rmse: %s    eval auc: %.4f  f1: %.4f  recall: %.4f    test auc: %.4f  f1: %.4f  recall: %.4f  rmse: %s'
-                    % (step, train_auc, train_f1, train_recall,
-                        f"{train_rmse:.4f}" if train_rmse is not None else "N/A", 
-                        eval_auc, eval_f1, eval_recall,
-                        test_auc, test_f1, test_recall,
-                        f"{test_rmse:.4f}" if test_rmse is not None else "N/A"))
+                # Imprimir resultados en el formato solicitado
+                epoch_time = time.time() - system_tracker.epoch_start_time
+                memory_mb = system_tracker.current_epoch_metrics['memory_usage_mb']
+                cpu_percent = system_tracker.current_epoch_metrics['cpu_usage_percent']
+                
+                # Formato: Epoch X: Time=Xs, Memory=XMB, CPU=X%, RMSE=X, MAE=X
+                rmse_str = f"{train_rmse:.4f}" if train_rmse is not None else "N/A"
+                mae_str = f"{train_mae:.4f}" if train_mae is not None else "N/A"
+                print(f"Epoch {step}: Time={epoch_time:.2f}s, Memory={memory_mb:.2f}MB, CPU={cpu_percent:.1f}%, RMSE={rmse_str}, MAE={mae_str}")
+                
+                if test_rmse is not None or test_mae is not None:
+                    test_rmse_str = f"{test_rmse:.4f}" if test_rmse is not None else "N/A"
+                    test_mae_str = f"{test_mae:.4f}" if test_mae is not None else "N/A"
+                    print(f"       Test metrics - RMSE={test_rmse_str}, MAE={test_mae_str}")
 
                 # top-K evaluation
                 if show_topk:
@@ -727,60 +629,58 @@ def train(args, data, show_loss, show_topk):
             # Final test metrics
             system_tracker.start_epoch("final")
             print("\nFinal evaluation on test set...")
-            final_test_auc, final_test_f1, final_test_recall, final_test_precision = ctr_eval_with_recall(sess, model, test_data, args.batch_size)
             
-            # Calcular RMSE final
+            # Calcular RMSE y MAE finales
             final_test_rmse = None
+            final_test_mae = None
             try:
                 if test_rmse_list:
                     final_test_rmse = test_rmse_list[-1]
-                else:
-                    # Intentar calcular en los datos de prueba
+                if test_mae_list:
+                    final_test_mae = test_mae_list[-1]
+                
+                # Si no tenemos métricas, intentar calcular en los datos de prueba
+                if final_test_rmse is None or final_test_mae is None:
                     test_rmse_values = []
+                    test_mae_values = []
                     test_start = 0
                     test_sample = test_data[:min(10000, test_data.shape[0])]
                     while test_start + args.batch_size <= test_sample.shape[0]:
                         test_batch_rmse = calculate_rmse_for_batch(sess, model, test_sample, test_start, test_start + args.batch_size)
+                        test_batch_mae = calculate_mae_for_batch(sess, model, test_sample, test_start, test_start + args.batch_size)
                         test_rmse_values.append(test_batch_rmse)
+                        test_mae_values.append(test_batch_mae)
                         test_start += args.batch_size
                     
-                    if test_rmse_values:
+                    if test_rmse_values and final_test_rmse is None:
                         final_test_rmse = float(np.mean(test_rmse_values))
-                        print(f"Final Test RMSE: {final_test_rmse:.4f}")
+                    if test_mae_values and final_test_mae is None:
+                        final_test_mae = float(np.mean(test_mae_values))
+                        
             except Exception as e:
-                print(f"Error calculating final test RMSE: {e}")
+                print(f"Error calculating final test metrics: {e}")
             
-            system_tracker.end_test(final_test_auc, final_test_f1, final_test_rmse, final_test_recall)            
-            print(f"\nFinal metrics - AUC: {final_test_auc:.4f}, F1: {final_test_f1:.4f}, Recall: {final_test_recall:.4f}, RMSE: {final_test_rmse if final_test_rmse is not None else 'N/A'}")
-            
-            # Debugging - añade esto antes del return en la función train
-            print("\n======== DEBUG RECALL VALUES =========")
-            print(f"Train recall list: {train_recall_list}")
-            print(f"Test recall list: {test_recall_list}")
-            print(f"Final test recall: {final_test_recall}")
-            print("======================================")
-    
+            system_tracker.end_test(final_test_rmse, final_test_mae)            
+            rmse_str = f"{final_test_rmse:.4f}" if final_test_rmse is not None else "N/A"
+            mae_str = f"{final_test_mae:.4f}" if final_test_mae is not None else "N/A"
+            print(f"\nFinal Test Metrics - RMSE: {rmse_str}, MAE: {mae_str}")
             
             # Save training metrics to CSV
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             metrics_df = pd.DataFrame({
                 'epoch': range(len(train_loss_list)),
-                'train_loss': train_loss_list,
-                'train_auc': train_auc_list,
-                'train_f1': train_f1_list,
-                'train_recall': train_recall_list,  # Asegúrate de que esté aquí
-                'test_auc': test_auc_list,
-                'test_f1': test_f1_list,
-                'test_recall': test_recall_list     # Y también aquí
+                'train_loss': train_loss_list
             })
             
-            
-            # Añadir RMSE si está disponible
+            # Añadir RMSE y MAE si están disponibles
             if train_rmse_list:
                 metrics_df['train_rmse'] = pd.Series(train_rmse_list).reindex(metrics_df.index)
-            
+            if train_mae_list:
+                metrics_df['train_mae'] = pd.Series(train_mae_list).reindex(metrics_df.index)
             if test_rmse_list:
                 metrics_df['test_rmse'] = pd.Series(test_rmse_list).reindex(metrics_df.index)
+            if test_mae_list:
+                metrics_df['test_mae'] = pd.Series(test_mae_list).reindex(metrics_df.index)
             
             metrics_file = f"{result_path}/model_metrics_{timestamp}.csv"
             metrics_df.to_csv(metrics_file, index=False)
@@ -788,31 +688,23 @@ def train(args, data, show_loss, show_topk):
             
             # Construir y devolver diccionario de resultados
             return {
-                'train_auc': train_auc_list[-1] if train_auc_list else None,
-                'train_f1': train_f1_list[-1] if train_f1_list else None,
-                'train_recall': train_recall_list[-1] if train_recall_list else None,  # Añade recall
                 'train_rmse': train_rmse_list[-1] if train_rmse_list else None,
-                'test_auc': final_test_auc,
-                'test_f1': final_test_f1,
-                'test_recall': final_test_recall,  # Añade recall
+                'train_mae': train_mae_list[-1] if train_mae_list else None,
                 'test_rmse': final_test_rmse,
+                'test_mae': final_test_mae,
                 'all_metrics': {
                     'train_loss': train_loss_list,
-                    'train_auc': train_auc_list,
-                    'train_f1': train_f1_list,
-                    'train_recall': train_recall_list,  # Añade recall
                     'train_rmse': train_rmse_list,
-                    'test_auc': test_auc_list,
-                    'test_f1': test_f1_list,
-                    'test_recall': test_recall_list,  # Añade recall
-                    'test_rmse': test_rmse_list
+                    'train_mae': train_mae_list,
+                    'test_rmse': test_rmse_list,
+                    'test_mae': test_mae_list
                 }
             }
             
 
     finally:
         # End emissions tracking and generate final reports
-        emissions_tracker.end_training(final_test_auc, final_test_f1, final_test_rmse, final_test_recall)
+        emissions_tracker.end_training(final_test_rmse, final_test_mae)
         
         # Visualize emissions results
         visualize_emissions_results()
@@ -861,67 +753,6 @@ def get_feed_dict(model, data, start, end):
                  model.item_indices: data[start:end, 1],
                  model.labels: data[start:end, 2]}
     return feed_dict
-
-
-def ctr_eval(sess, model, data, batch_size):
-    start = 0
-    auc_list = []
-    f1_list = []
-    while start + batch_size <= data.shape[0]:
-        auc, f1 = model.eval(sess, get_feed_dict(model, data, start, start + batch_size))
-        auc_list.append(auc)
-        f1_list.append(f1)
-        start += batch_size
-    return float(np.mean(auc_list)), float(np.mean(f1_list))
-
-
-def ctr_eval_with_recall(sess, model, data, batch_size):
-    """Evaluación extendida que incluye recall junto a AUC y F1"""
-    start = 0
-    auc_list = []
-    f1_list = []
-    recall_list = []
-    precision_list = []
-    
-    while start + batch_size <= data.shape[0]:
-        feed_dict = get_feed_dict(model, data, start, start + batch_size)
-        auc, f1 = model.eval(sess, feed_dict)
-        
-        # Calcular recall manualmente
-        # Primero obtenemos las predicciones
-        items, scores = model.get_scores(sess, feed_dict)
-        labels = data[start:start + batch_size, 2]
-        
-        # Convertir scores en predicciones binarias
-        predictions = (scores > 0.5).astype(int)
-        
-        # Calcular recall: tp / (tp + fn)
-        true_positives = np.sum((predictions == 1) & (labels == 1))
-        false_negatives = np.sum((predictions == 0) & (labels == 1))
-        
-        if true_positives + false_negatives > 0:
-            recall = true_positives / (true_positives + false_negatives)
-        else:
-            recall = 0.0
-            
-        # Calcular precisión: tp / (tp + fp)
-        false_positives = np.sum((predictions == 1) & (labels == 0))
-        if true_positives + false_positives > 0:
-            precision = true_positives / (true_positives + false_positives)
-        else:
-            precision = 0.0
-        
-        auc_list.append(auc)
-        f1_list.append(f1)
-        recall_list.append(recall)
-        precision_list.append(precision)
-        
-        start += batch_size
-        
-    if len(recall_list) > 0:
-        print(f"DEBUG - Recall en batch: {recall_list[-1]:.4f}")    
-        
-    return float(np.mean(auc_list)), float(np.mean(f1_list)), float(np.mean(recall_list)), float(np.mean(precision_list))
 
 
 def topk_eval(sess, model, user_list, train_record, test_record, item_set, k_list, batch_size):

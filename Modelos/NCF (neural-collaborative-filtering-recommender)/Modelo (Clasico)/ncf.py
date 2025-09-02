@@ -37,6 +37,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -55,6 +58,12 @@ class SystemMetricsTracker:
         if mae is not None:
             self.current_epoch_metrics['mae'] = mae
         self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if rmse is not None and rmse < self.best_rmse:
+            self.best_rmse = rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
         
         # Imprimir resumen de época
         print(f"\nEpoch {epoch} Metrics:")
@@ -81,10 +90,11 @@ class SystemMetricsTracker:
         # Imprimir métricas finales
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Loss={m['loss']:.4f}"
-            if 'rmse' in m:
+            # Formato específico solicitado: Epoch X: Time=Xs, Memory=XMB, CPU=X%, RMSE=X, MAE=X
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%"
+            if 'rmse' in m and m['rmse'] is not None:
                 metrics_str += f", RMSE={m['rmse']:.4f}"
-            if 'mae' in m:
+            if 'mae' in m and m['mae'] is not None:
                 metrics_str += f", MAE={m['mae']:.4f}"
             print(metrics_str)
         
@@ -92,9 +102,20 @@ class SystemMetricsTracker:
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test RMSE: {rmse:.4f}")
+        print(f"RMSE: {rmse:.4f}")
         if mae is not None:
-            print(f"Test MAE: {mae:.4f}")
+            print(f"MAE: {mae:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
+                if 'mae' in self.best_rmse_metrics and self.best_rmse_metrics['mae'] is not None:
+                    print(f"MAE: {self.best_rmse_metrics['mae']:.4f}")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -114,6 +135,10 @@ class EmissionsPerEpochTracker:
         self.epoch_loss = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Inicializar tracker principal
         self.main_tracker = EmissionsTracker(
@@ -171,14 +196,20 @@ class EmissionsPerEpochTracker:
             self.epoch_loss.append(loss)
             if rmse is not None:
                 self.epoch_rmse.append(rmse)
+                # Rastrear el mejor RMSE y sus emisiones
+                if rmse < self.best_rmse:
+                    self.best_rmse = rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
             if mae is not None:
                 self.epoch_mae.append(mae)
             
             print(f"Epoch {epoch} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg, Loss: {loss:.4f}")
             if rmse is not None:
-                print(f"RMSE: {rmse:.4f}")
+                print(f"  RMSE: {rmse:.4f}")
             if mae is not None:
-                print(f"MAE: {mae:.4f}")
+                print(f"  MAE: {mae:.4f}")
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
     
@@ -237,6 +268,13 @@ class EmissionsPerEpochTracker:
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
             df.to_csv(emissions_file, index=False)
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
+            
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
             
             # Graficar las relaciones
             self.plot_emissions_vs_metrics(timestamp, final_rmse, final_mae)
@@ -559,6 +597,15 @@ def train_model():
     
     try:
         print("\nGenerando gráficos y métricas de emisiones...")
+        # Pasar la información del mejor RMSE del system_tracker al emissions_tracker
+        if system_tracker.best_rmse_epoch is not None:
+            emissions_tracker.best_rmse = system_tracker.best_rmse
+            emissions_tracker.best_rmse_epoch = system_tracker.best_rmse_epoch
+            # Buscar las emisiones correspondientes al mejor epoch
+            if system_tracker.best_rmse_epoch < len(emissions_tracker.epoch_emissions):
+                emissions_tracker.best_rmse_emissions = emissions_tracker.epoch_emissions[system_tracker.best_rmse_epoch]
+                emissions_tracker.best_rmse_cumulative_emissions = emissions_tracker.cumulative_emissions[system_tracker.best_rmse_epoch]
+        
         emissions_tracker.end_training(final_rmse, final_mae)
     except Exception as e:
         print(f"Error al generar métricas de emisiones: {e}")
@@ -594,6 +641,17 @@ def train_model():
     print(f"Tiempo total de ejecución: {tiempo_total:.2f} segundos")
     print(f"RMSE final: {final_rmse:.4f}")
     print(f"MAE final: {final_mae:.4f}")
+    
+    # Mostrar información del mejor RMSE
+    if system_tracker.best_rmse_epoch is not None:
+        print(f"\nMejor RMSE durante entrenamiento: {system_tracker.best_rmse:.4f} (Época {system_tracker.best_rmse_epoch})")
+        if (system_tracker.best_rmse_epoch < len(emissions_tracker.epoch_emissions) and 
+            system_tracker.best_rmse_epoch < len(emissions_tracker.cumulative_emissions)):
+            best_epoch_emissions = emissions_tracker.epoch_emissions[system_tracker.best_rmse_epoch]
+            best_cumulative_emissions = emissions_tracker.cumulative_emissions[system_tracker.best_rmse_epoch]
+            print(f"Emisiones en mejor época: {best_epoch_emissions:.8f} kg")
+            print(f"Emisiones acumuladas en mejor época: {best_cumulative_emissions:.8f} kg")
+    
     print("="*60)
     
     # Guardar las métricas finales en un archivo separado para asegurar que se capturen

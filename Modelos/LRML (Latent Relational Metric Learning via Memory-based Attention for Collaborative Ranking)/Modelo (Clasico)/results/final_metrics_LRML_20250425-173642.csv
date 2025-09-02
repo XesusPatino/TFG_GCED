@@ -1,2 +1,0 @@
-model,final_rmse,final_recall,final_ndcg,total_emissions_kg,total_time_seconds,average_cpu_percent,memory_usage_mb
-LRML,0.8343111650750217,0.0054087505537021375,0.013649021729076349,0.0011023657236531902,1243.8515446186066,341.434,648.9453125

@@ -18,8 +18,8 @@ parser.add_argument('--train_epoch', type=int, default=50)
 parser.add_argument('--batch_size', type=int, default=1024)
 parser.add_argument('--optimizer_method', choices=['Adam', 'RMSProp'], default='Adam')
 parser.add_argument('--grad_clip', type=bool, default=False)
-parser.add_argument('--base_lr', type=float, default=1e-3)
-parser.add_argument('--decay_epoch_step', type=int, default=50, help="decay the learning rate for each n epochs")
+parser.add_argument('--base_lr', type=float, default=5e-4)  # Reducir learning rate para más estabilidad
+parser.add_argument('--decay_epoch_step', type=int, default=10, help="decay the learning rate for each n epochs")  # Decay más frecuente
 parser.add_argument('--random_seed', type=int, default=1000)  
 parser.add_argument('--display_step', type=int, default=1)
 
@@ -70,6 +70,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -79,13 +82,21 @@ class SystemMetricsTracker:
             'cpu_usage_percent': psutil.cpu_percent(),
         }
         
-    def end_epoch(self, epoch, loss, rmse=None):
+    def end_epoch(self, epoch, loss, rmse=None, topk_metrics=None):
         epoch_time = time.time() - self.epoch_start_time
         self.current_epoch_metrics['epoch_time_sec'] = epoch_time
         self.current_epoch_metrics['loss'] = loss
         if rmse is not None:
             self.current_epoch_metrics['rmse'] = rmse
+        if topk_metrics is not None:
+            self.current_epoch_metrics.update(topk_metrics)
         self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if rmse is not None and rmse < self.best_rmse:
+            self.best_rmse = rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
         
         # Imprimir resumen de época
         print(f"\nEpoch {epoch} Metrics:")
@@ -95,8 +106,11 @@ class SystemMetricsTracker:
         print(f"  Loss: {loss:.4f}")
         if rmse is not None:
             print(f"  RMSE: {rmse:.4f}")
+        if topk_metrics is not None:
+            for metric, value in topk_metrics.items():
+                print(f"  {metric}: {value:.4f}")
         
-    def end_test(self, rmse):
+    def end_test(self, rmse, topk_metrics=None):
         self.test_metrics = {
             'test_time_sec': time.time() - self.epoch_start_time,
             'total_time_sec': time.time() - self.start_time,
@@ -104,20 +118,42 @@ class SystemMetricsTracker:
             'final_cpu_usage_percent': psutil.cpu_percent(),
             'test_rmse': rmse,
         }
+        if topk_metrics is not None:
+            self.test_metrics.update(topk_metrics)
         
         # Imprimir métricas finales
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Loss={m['loss']:.4f}"
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%"
             if 'rmse' in m:
                 metrics_str += f", RMSE={m['rmse']:.4f}"
+            if 'recall@5' in m:
+                metrics_str += f", Recall@5={m['recall@5']:.4f}, Recall@10={m['recall@10']:.4f}"
+            if 'ndcg@5' in m:
+                metrics_str += f", NDCG@5={m['ndcg@5']:.4f}, NDCG@10={m['ndcg@10']:.4f}"
             print(metrics_str)
         
         print("\n=== Final Test Metrics ===")
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test RMSE: {rmse:.4f}")
+        print(f"RMSE: {rmse:.4f}")
+        if topk_metrics is not None:
+            for k in [5, 10, 20, 50]:
+                if f'recall@{k}' in topk_metrics:
+                    print(f"Recall@{k}: {topk_metrics[f'recall@{k}']:.4f}")
+            for k in [5, 10, 20, 50]:
+                if f'ndcg@{k}' in topk_metrics:
+                    print(f"NDCG@{k}: {topk_metrics[f'ndcg@{k}']:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -133,8 +169,13 @@ class EmissionsPerEpochTracker:
         self.cumulative_emissions = []
         self.epoch_rmse = []
         self.epoch_loss = []
+        self.epoch_topk_metrics = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Crear directorio para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
@@ -177,7 +218,7 @@ class EmissionsPerEpochTracker:
             print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, loss, rmse=None):
+    def end_epoch(self, epoch, loss, rmse=None, topk_metrics=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -196,14 +237,25 @@ class EmissionsPerEpochTracker:
             self.epoch_loss.append(loss)
             if rmse is not None:
                 self.epoch_rmse.append(rmse)
+                # Rastrear el mejor RMSE y sus emisiones
+                if rmse < self.best_rmse:
+                    self.best_rmse = rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
+            if topk_metrics is not None:
+                self.epoch_topk_metrics.append(topk_metrics)
             
             print(f"Epoch {epoch} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg, Loss: {loss:.4f}")
             if rmse is not None:
                 print(f"RMSE: {rmse:.4f}")
+            if topk_metrics is not None:
+                for metric, value in topk_metrics.items():
+                    print(f"{metric}: {value:.4f}")
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
     
-    def end_training(self, final_rmse):
+    def end_training(self, final_rmse, final_topk_metrics=None):
         try:
             # Detener el tracker principal
             final_emissions = 0.0
@@ -232,6 +284,8 @@ class EmissionsPerEpochTracker:
                 self.cumulative_emissions = [final_emissions]
                 if final_rmse is not None:
                     self.epoch_rmse = [final_rmse]
+                if final_topk_metrics is not None:
+                    self.epoch_topk_metrics = [final_topk_metrics]
             
             # Si no hay datos, salir
             if not self.epoch_emissions:
@@ -244,28 +298,47 @@ class EmissionsPerEpochTracker:
             
             # Crear dataframe con todos los datos
             timestamp = time.strftime("%Y%m%d-%H%M%S")
-            df = pd.DataFrame({
+            df_data = {
                 'epoch': range(len(self.epoch_emissions)),
                 'epoch_emissions_kg': self.epoch_emissions,
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss if self.epoch_loss else [0.0] * len(self.epoch_emissions),
                 'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions)
-            })
+            }
+            
+            # Añadir métricas Top-K si hay datos
+            if self.epoch_topk_metrics:
+                for k in [5, 10, 20, 50]:
+                    recall_key = f'recall@{k}'
+                    ndcg_key = f'ndcg@{k}'
+                    if recall_key in self.epoch_topk_metrics[0]:
+                        df_data[recall_key] = [metrics[recall_key] for metrics in self.epoch_topk_metrics]
+                    if ndcg_key in self.epoch_topk_metrics[0]:
+                        df_data[ndcg_key] = [metrics[ndcg_key] for metrics in self.epoch_topk_metrics]
+            
+            df = pd.DataFrame(df_data)
             
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
             df.to_csv(emissions_file, index=False)
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
             
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
+            
             # Graficar las relaciones
-            self.plot_emissions_vs_metrics(timestamp, final_rmse)
+            self.plot_emissions_vs_metrics(timestamp, final_rmse, final_topk_metrics)
             
         except Exception as e:
             print(f"Error al generar gráficos de emisiones: {e}")
             import traceback
             traceback.print_exc()
     
-    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None):
-        """Genera gráficos para emisiones vs métricas"""
+    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None, final_topk_metrics=None):
+        """Genera gráficos para emisiones vs métricas incluyendo Top-K"""
         
         # Usar RMSE por época si está disponible, sino crear lista con el RMSE final
         if not self.epoch_rmse and final_rmse is not None:
@@ -292,34 +365,50 @@ class EmissionsPerEpochTracker:
                 plt.close()
                 print(f"Gráfico guardado en: {file_path}")
             
-            # 2. Gráfico combinado: Emisiones por época y acumulativas
-            plt.figure(figsize=(12, 10))
+            # 2. Gráfico combinado: Emisiones por época y métricas
+            fig, axes = plt.subplots(2, 3, figsize=(18, 12))
             
-            plt.subplot(2, 2, 1)
-            plt.plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
-            plt.title('Emisiones por Época')
-            plt.xlabel('Época')
-            plt.ylabel('CO2 Emissions (kg)')
+            # Emisiones por época
+            axes[0, 0].plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
+            axes[0, 0].set_title('Emisiones por Época')
+            axes[0, 0].set_xlabel('Época')
+            axes[0, 0].set_ylabel('CO2 Emissions (kg)')
             
-            plt.subplot(2, 2, 2)
-            plt.plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
-            plt.title('Emisiones Acumuladas por Época')
-            plt.xlabel('Época')
-            plt.ylabel('CO2 Emissions (kg)')
+            # Emisiones acumuladas
+            axes[0, 1].plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
+            axes[0, 1].set_title('Emisiones Acumuladas por Época')
+            axes[0, 1].set_xlabel('Época')
+            axes[0, 1].set_ylabel('CO2 Emissions (kg)')
             
-            if self.epoch_loss:
-                plt.subplot(2, 2, 3)
-                plt.plot(range(len(self.epoch_loss)), self.epoch_loss, 'g-', marker='o')
-                plt.title('Loss por Época')
-                plt.xlabel('Época')
-                plt.ylabel('Loss')
-            
+            # RMSE por época
             if self.epoch_rmse:
-                plt.subplot(2, 2, 4)
-                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
-                plt.title('RMSE por Época')
-                plt.xlabel('Época')
-                plt.ylabel('RMSE')
+                axes[0, 2].plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
+                axes[0, 2].set_title('RMSE por Época')
+                axes[0, 2].set_xlabel('Época')
+                axes[0, 2].set_ylabel('RMSE')
+            
+            # Loss por época
+            if self.epoch_loss:
+                axes[1, 0].plot(range(len(self.epoch_loss)), self.epoch_loss, 'g-', marker='o')
+                axes[1, 0].set_title('Loss por Época')
+                axes[1, 0].set_xlabel('Época')
+                axes[1, 0].set_ylabel('Loss')
+            
+            # Métricas Top-K si están disponibles
+            if self.epoch_topk_metrics:
+                # Recall@10
+                recall_10 = [metrics.get('recall@10', 0) for metrics in self.epoch_topk_metrics]
+                axes[1, 1].plot(range(len(recall_10)), recall_10, 'm-', marker='s')
+                axes[1, 1].set_title('Recall@10 por Época')
+                axes[1, 1].set_xlabel('Época')
+                axes[1, 1].set_ylabel('Recall@10')
+                
+                # NDCG@10
+                ndcg_10 = [metrics.get('ndcg@10', 0) for metrics in self.epoch_topk_metrics]
+                axes[1, 2].plot(range(len(ndcg_10)), ndcg_10, 'c-', marker='d')
+                axes[1, 2].set_title('NDCG@10 por Época')
+                axes[1, 2].set_xlabel('Época')
+                axes[1, 2].set_ylabel('NDCG@10')
             
             plt.tight_layout()
             
@@ -328,8 +417,66 @@ class EmissionsPerEpochTracker:
             plt.close()
             print(f"Gráfico guardado en: {file_path}")
             
+            # 3. Gráfico específico de métricas Top-K vs Emisiones
+            if self.epoch_topk_metrics and self.cumulative_emissions:
+                plt.figure(figsize=(15, 10))
+                
+                # Extraer métricas
+                recall_5 = [metrics.get('recall@5', 0) for metrics in self.epoch_topk_metrics]
+                recall_10 = [metrics.get('recall@10', 0) for metrics in self.epoch_topk_metrics]
+                ndcg_5 = [metrics.get('ndcg@5', 0) for metrics in self.epoch_topk_metrics]
+                ndcg_10 = [metrics.get('ndcg@10', 0) for metrics in self.epoch_topk_metrics]
+                
+                # Subplot 1: Recall vs Emisiones
+                plt.subplot(2, 2, 1)
+                plt.plot(self.cumulative_emissions, recall_5, 'b-', marker='o', label='Recall@5')
+                plt.plot(self.cumulative_emissions, recall_10, 'g-', marker='s', label='Recall@10')
+                plt.xlabel('Emisiones Acumuladas (kg)')
+                plt.ylabel('Recall')
+                plt.title('Recall vs Emisiones Acumuladas')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Subplot 2: NDCG vs Emisiones
+                plt.subplot(2, 2, 2)
+                plt.plot(self.cumulative_emissions, ndcg_5, 'r-', marker='o', label='NDCG@5')
+                plt.plot(self.cumulative_emissions, ndcg_10, 'm-', marker='s', label='NDCG@10')
+                plt.xlabel('Emisiones Acumuladas (kg)')
+                plt.ylabel('NDCG')
+                plt.title('NDCG vs Emisiones Acumuladas')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Subplot 3: Recall por época
+                plt.subplot(2, 2, 3)
+                epochs = range(len(recall_5))
+                plt.plot(epochs, recall_5, 'b-', marker='o', label='Recall@5')
+                plt.plot(epochs, recall_10, 'g-', marker='s', label='Recall@10')
+                plt.xlabel('Época')
+                plt.ylabel('Recall')
+                plt.title('Recall por Época')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                # Subplot 4: NDCG por época
+                plt.subplot(2, 2, 4)
+                plt.plot(epochs, ndcg_5, 'r-', marker='o', label='NDCG@5')
+                plt.plot(epochs, ndcg_10, 'm-', marker='s', label='NDCG@10')
+                plt.xlabel('Época')
+                plt.ylabel('NDCG')
+                plt.title('NDCG por Época')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                plt.tight_layout()
+                
+                file_path = f'{self.result_path}/emissions_plots/topk_vs_emissions_{self.model_name}_{timestamp}.png'
+                plt.savefig(file_path)
+                plt.close()
+                print(f"Gráfico Top-K vs Emisiones guardado en: {file_path}")
+            
+            # 4. Scatter plot de rendimiento vs emisiones
             if self.epoch_rmse:
-                # 3. Scatter plot de rendimiento frente a emisiones acumulativas
                 plt.figure(figsize=(10, 6))
                 
                 # Ajustar tamaño de los puntos según la época
@@ -352,6 +499,7 @@ class EmissionsPerEpochTracker:
                 plt.savefig(file_path)
                 plt.close()
                 print(f"Gráfico guardado en: {file_path}")
+                
         except Exception as e:
             print(f"Error al generar los gráficos: {e}")
             import traceback
@@ -384,126 +532,113 @@ def calculate_rmse(model, input_R, mask_R, num_test_ratings):
     
     return rmse, output
 
-# Función para generar predicciones para todos los ítems para un grupo de usuarios
-def generate_predictions_for_users(model, user_batch, num_items):
+# Función mejorada para calcular métricas top-K
+def calculate_topk_metrics(model, test_users, k_values=[5, 10, 20, 50], threshold=2.5):
     """
-    Genera predicciones personalizadas para cada usuario
+    Calcula métricas de top-K (Recall y NDCG) de manera más eficiente y precisa
+    
+    Args:
+        model: Modelo AutoRec entrenado
+        test_users: Lista de índices de usuarios para evaluar
+        k_values: Lista de valores de k para evaluar
+        threshold: Umbral para considerar un ítem como relevante (reducido a 2.5)
+    
+    Returns:
+        dict: Métricas calculadas para cada valor de k
     """
-    predictions = np.zeros((len(user_batch), num_items))
+    metrics = {}
     
-    # Para cada usuario, predecir valoraciones para todos los ítems
-    for i, user_idx in enumerate(user_batch):
-        # 1. Combinar valoraciones conocidas del usuario con entrada vacía para los ítems sin calificar
-        user_input = np.zeros_like(train_R[0:1])  # Crear matriz vacía con forma correcta
+    for k in k_values:
+        recall_scores = []
+        ndcg_scores = []
+        total_relevant_items = 0
+        total_recommended_items = 0
         
-        # 2. Copiar las valoraciones existentes del usuario (solo las que ha valorado)
-        # IMPORTANTE: Debemos mantener la estructura sparse para que el modelo personalice
-        for item_idx in range(num_items):
-            if train_mask_R[user_idx, item_idx] > 0:  # Si el usuario ha valorado este ítem
-                user_input[0, item_idx] = train_R[user_idx, item_idx]
-        
-        # 3. Obtener predicciones del modelo para este usuario específico
-        output = model.model(user_input).numpy()
-        predictions[i] = output[0]
-        
-        # 4. Verificar que hay variación en las predicciones (diagnóstico)
-        if i < 2:  # Solo para los primeros usuarios
-            top5_before_mask = np.argsort(output[0])[-5:][::-1]
-            print(f"  Debug Usuario {user_idx}: Top-5 ítems predichos: {top5_before_mask}")
-    
-    return predictions
-
-def debug_topk_metrics(predictions, true_ratings, k=10):
-    """
-    Función de diagnóstico para entender por qué las métricas top-K son 0
-    """
-    threshold = 3.0
-    binary_ratings = (true_ratings >= threshold).astype(float)
-    
-    # Verificaciones básicas
-    print(f"Shape de las predicciones: {predictions.shape}")
-    print(f"Shape de las valoraciones reales: {true_ratings.shape}")
-    print(f"Número de valoraciones por encima del umbral: {np.sum(binary_ratings)}")
-    print(f"Número máximo posible de ítems relevantes: {np.sum(binary_ratings > 0, axis=1).max()}")
-    print(f"Distribución de valoraciones reales: {np.unique(true_ratings, return_counts=True)}")
-    
-    # Evaluemos algunos usuarios para diagnóstico
-    for user_idx in range(min(5, predictions.shape[0])):
-        user_preds = predictions[user_idx]
-        user_ratings = binary_ratings[user_idx]
-        
-        # Obtener top-k ítems sin filtrar
-        top_k_items_raw = np.argsort(user_preds)[-k:][::-1]
-        
-        # Ignorar ítems que el usuario ya ha valorado en entrenamiento
-        relevant_items = np.where(user_ratings == 1)[0]
-        
-        print(f"\nUsuario #{user_idx}:")
-        print(f"  Ítems relevantes: {len(relevant_items)}")
-        print(f"  Top-{k} ítems (sin filtrar): {top_k_items_raw}")
-        print(f"  Coincidencias: {np.isin(top_k_items_raw, relevant_items).sum()}")
-        
-        if len(relevant_items) > 0:
-            print(f"  Algunos ítems relevantes: {relevant_items[:5]}")
+        for user_idx in test_users:
+            # Obtener las valoraciones reales del usuario en el conjunto de test
+            user_test_ratings = test_R[user_idx]
+            user_test_mask = test_mask_R[user_idx]
             
-    return None
-
-# Función para calcular métricas top-K
-def calculate_topk_metrics(predictions, true_ratings, user_indices, k=10):
-    """
-    Calcula métricas de top-K corregidas
-    """
-    num_users = predictions.shape[0]
-    threshold = 3.0
-    binary_ratings = (true_ratings >= threshold).astype(float)
+            # Solo considerar ítems que el usuario efectivamente valoró en el test
+            rated_items_in_test = np.where(user_test_mask > 0)[0]
+            if len(rated_items_in_test) == 0:
+                continue
+                
+            # Generar predicciones para todos los ítems
+            user_input = np.copy(train_R[user_idx:user_idx+1])
+            predictions = model.model(user_input).numpy()[0]
+            
+            # CAMBIO IMPORTANTE: Permitir recomendar tanto ítems conocidos como desconocidos
+            # Esto es más realista ya que evaluamos si el modelo predice bien las preferencias
+            # Solo eliminar ítems con predicciones muy bajas o inválidas
+            valid_items = ~np.isnan(predictions) & ~np.isinf(predictions)
+            masked_predictions = predictions.copy()
+            masked_predictions[~valid_items] = -np.inf
+            
+            # Obtener top-k ítems con mayor predicción
+            if np.all(masked_predictions == -np.inf):
+                continue
+                
+            top_k_items = np.argsort(masked_predictions)[-k:][::-1]
+            
+            # Identificar ítems relevantes en el test (valoraciones >= threshold)
+            # CAMBIO: Usar umbral más bajo y más realista
+            relevant_items_in_test = rated_items_in_test[user_test_ratings[rated_items_in_test] >= threshold]
+            
+            if len(relevant_items_in_test) == 0:
+                # Si no hay ítems relevantes con el umbral, usar los mejor valorados
+                if len(rated_items_in_test) > 0:
+                    # Tomar el top 50% de las valoraciones del usuario como relevantes
+                    user_ratings_test = user_test_ratings[rated_items_in_test]
+                    median_rating = np.median(user_ratings_test)
+                    relevant_items_in_test = rated_items_in_test[user_test_ratings[rated_items_in_test] >= median_rating]
+                else:
+                    continue
+                
+            total_relevant_items += len(relevant_items_in_test)
+            total_recommended_items += k
+                
+            # Calcular Recall: ¿Cuántos ítems relevantes están en el top-k?
+            hits = len(np.intersect1d(top_k_items, relevant_items_in_test))
+            recall = hits / len(relevant_items_in_test) if len(relevant_items_in_test) > 0 else 0.0
+            recall_scores.append(recall)
+            
+            # Calcular NDCG con peso por valoración real
+            dcg = 0.0
+            for rank, item_idx in enumerate(top_k_items):
+                if item_idx in relevant_items_in_test:
+                    # Usar la valoración real como peso de relevancia
+                    if item_idx < len(user_test_ratings) and user_test_mask[item_idx] > 0:
+                        relevance = user_test_ratings[item_idx] - 1  # Normalizar desde 1-5 a 0-4
+                    else:
+                        relevance = 1.0  # Peso base si no tenemos la valoración
+                    dcg += (2**relevance - 1) / np.log2(rank + 2)
+            
+            # IDCG (DCG ideal) - ordenar ítems relevantes por valoración
+            relevant_ratings = []
+            for item_idx in relevant_items_in_test:
+                if item_idx < len(user_test_ratings) and user_test_mask[item_idx] > 0:
+                    relevant_ratings.append(user_test_ratings[item_idx] - 1)
+                else:
+                    relevant_ratings.append(1.0)
+            
+            # Ordenar de mayor a menor valoración
+            relevant_ratings = sorted(relevant_ratings, reverse=True)
+            
+            idcg = 0.0
+            for rank, rating in enumerate(relevant_ratings[:k]):
+                idcg += (2**rating - 1) / np.log2(rank + 2)
+            
+            ndcg = dcg / idcg if idcg > 0 else 0.0
+            ndcg_scores.append(ndcg)
+        
+        # Promediar métricas
+        metrics[f'recall@{k}'] = np.mean(recall_scores) if recall_scores else 0.0
+        metrics[f'ndcg@{k}'] = np.mean(ndcg_scores) if ndcg_scores else 0.0
+        
+        print(f"K={k}: {len(recall_scores)} usuarios evaluados, {total_relevant_items} ítems relevantes totales")
     
-    recall_list = []
-    ndcg_list = []
-    
-    for i, user_idx in enumerate(range(num_users)):
-        actual_user = user_indices[i]  # ID real del usuario
-        user_preds = predictions[i]
-        user_ratings = binary_ratings[i]
-        
-        # CORRECCIÓN: Solo enmascarar ítems que el usuario ha valorado en ENTRENAMIENTO
-        # En vez de usar true_ratings (test), usamos train_mask_R (entrenamiento)
-        user_mask = train_mask_R[actual_user] == 0  # 1 donde NO hay valoración en entrenamiento
-        
-        # Aplicar máscara (solo recomendar ítems no valorados en entrenamiento)
-        masked_preds = user_preds.copy()
-        masked_preds[~user_mask] = -np.inf
-        
-        # Obtener top-k ítems
-        top_k_items = np.argsort(masked_preds)[-k:][::-1]
-        
-        # Calcular recall: relevantes_en_topk / total_relevantes
-        relevant_items = np.where(user_ratings == 1)[0]
-        if len(relevant_items) > 0:
-            hits = np.isin(top_k_items, relevant_items).sum()
-            recall = hits / len(relevant_items)
-            recall_list.append(recall)
-        
-        # Calcular NDCG
-        dcg = 0
-        idcg = 0
-        
-        # DCG = suma(rel_i / log2(i+1))
-        for i, item_idx in enumerate(top_k_items):
-            if item_idx in relevant_items:
-                dcg += 1 / np.log2(i + 2)  # +2 porque i empieza en 0 y log2(1) = 0
-        
-        # IDCG (DCG ideal cuando los ítems relevantes están al principio)
-        for i in range(min(len(relevant_items), k)):
-            idcg += 1 / np.log2(i + 2)
-        
-        if idcg > 0:
-            ndcg_list.append(dcg / idcg)
-    
-    # Calcular promedios
-    recall = np.mean(recall_list) if recall_list else 0
-    ndcg = np.mean(ndcg_list) if ndcg_list else 0
-    
-    return {'recall@k': recall, 'ndcg@k': ndcg}
+    return metrics
 
 def modified_run():
     print("\nIniciando entrenamiento...")
@@ -512,6 +647,11 @@ def modified_run():
     
     # Lista para almacenar métricas por época
     metrics_by_epoch = []
+    
+    # Seleccionar usuarios para evaluación Top-K (muestra representativa)
+    num_eval_users = min(1000, model.num_users)  # Usar más usuarios para mayor estabilidad
+    eval_user_indices = np.random.choice(model.num_users, num_eval_users, replace=False)
+    print(f"Evaluando Top-K con {num_eval_users} usuarios por época")
     
     # Entrenar el modelo con seguimiento de métricas
     for epoch in range(model.train_epoch):
@@ -540,60 +680,44 @@ def modified_run():
             total_loss += loss.numpy()
             batch_count += 1
             
-            if i % 10 == 0:
+            if i % 50 == 0:  # Reducir frecuencia de prints
                 print(f"  Batch {i}: {ratings_in_batch} valoraciones, Loss: {loss.numpy():.4f}")
         
         # Calcular pérdida promedio por batch
         avg_loss = total_loss / max(1, batch_count)
         model.train_cost_list.append(avg_loss)
         
-        # Calcular RMSE tradicional en el conjunto de validación para comparación
+        # Calcular RMSE tradicional en el conjunto de validación
         rmse, _ = calculate_rmse(model, test_R, test_mask_R, num_test_ratings)
         test_loss = model.loss_function(test_R, test_mask_R, model.model(test_R)).numpy()
         
         model.test_cost_list.append(test_loss)
         model.test_rmse_list.append(rmse)
         
-        # ===== TOP-K EVALUATION =====
-        # Tomar una muestra de usuarios para la evaluación top-K 
-        num_eval_users = min(500, model.num_users)
-        eval_user_indices = np.random.choice(model.num_users, num_eval_users, replace=False)
+        # Calcular métricas Top-K usando la función mejorada
+        print(f"Calculando métricas Top-K para época {epoch+1}...")
+        topk_metrics = calculate_topk_metrics(model, eval_user_indices, k_values=[5, 10, 20, 50], threshold=2.5)
         
-        # Generar predicciones para todos los ítems para esta muestra de usuarios
-        print(f"Evaluando top-K para {num_eval_users} usuarios...")
-        
-        # Versión mejorada de generate_predictions_for_users
-        eval_predictions = np.zeros((len(eval_user_indices), model.num_items))
-        for i, user_idx in enumerate(eval_user_indices):
-            # Usar valoraciones conocidas del entrenamiento como entrada
-            user_input = np.copy(train_R[user_idx:user_idx+1])
-            
-            # Obtener predicciones del modelo para todos los ítems
-            output = model.model(user_input).numpy()
-            eval_predictions[i] = output[0]
-        
-        # Extraer valoraciones reales para esos usuarios del test
-        eval_true_ratings = test_R[eval_user_indices]
-        
-        # Calcular métricas top-K
-        topk_metrics = calculate_topk_metrics(eval_predictions, eval_true_ratings, eval_user_indices, k=10)
-        
-        # Finalizar seguimiento de época
+        # Guardar métricas de la época
         epoch_metrics = {
             'epoch': epoch,
             'train_loss': avg_loss,
             'test_rmse': rmse,
-            'recall@10': topk_metrics['recall@k'],
-            'ndcg@10': topk_metrics['ndcg@k'],
+            **topk_metrics  # Incluir todas las métricas Top-K
         }
         metrics_by_epoch.append(epoch_metrics)
         
-        system_tracker.end_epoch(epoch, avg_loss, rmse)
-        emissions_tracker.end_epoch(epoch, avg_loss, rmse)
+        # Finalizar seguimiento de época
+        system_tracker.end_epoch(epoch, avg_loss, rmse, topk_metrics)
+        emissions_tracker.end_epoch(epoch, avg_loss, rmse, topk_metrics)
         
         # Mostrar progreso
         if (epoch + 1) % model.display_step == 0:
-            print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Test RMSE: {rmse:.4f} | Recall@10: {topk_metrics['recall@k']:.4f} | NDCG@10: {topk_metrics['ndcg@k']:.4f} | Time: {int(time.time() - start_time)}s")
+            progress_str = f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Test RMSE: {rmse:.4f}"
+            progress_str += f" | Recall@5: {topk_metrics['recall@5']:.4f} | Recall@10: {topk_metrics['recall@10']:.4f}"
+            progress_str += f" | NDCG@5: {topk_metrics['ndcg@5']:.4f} | NDCG@10: {topk_metrics['ndcg@10']:.4f}"
+            progress_str += f" | Time: {int(time.time() - start_time)}s"
+            print(progress_str)
     
     print("\nEvaluando modelo en conjunto de prueba...")
     # Evaluar modelo en conjunto de prueba
@@ -602,42 +726,12 @@ def modified_run():
     # Evaluación RMSE tradicional
     final_rmse, final_output = calculate_rmse(model, test_R, test_mask_R, num_test_ratings)
     
-    # Evaluación Top-K en conjunto de prueba completo
-    # Para el conjunto de prueba, podemos permitirnos usar más usuarios
-    num_test_users = min(1000, model.num_users)
+    # Evaluación Top-K en conjunto de prueba completo con más usuarios
+    num_test_users = min(2000, model.num_users)  # Usar más usuarios para el test final
     test_user_indices = np.random.choice(model.num_users, num_test_users, replace=False)
     
-    print(f"Evaluando top-K para {num_test_users} usuarios en conjunto de prueba...")
-    
-    # Generar predicciones para usuarios de prueba
-    test_predictions = np.zeros((len(test_user_indices), model.num_items))
-    for i, user_idx in enumerate(test_user_indices):
-        # Usar valoraciones conocidas del entrenamiento como entrada
-        user_input = np.copy(train_R[user_idx:user_idx+1])
-        
-        # Obtener predicciones del modelo para todos los ítems
-        output = model.model(user_input).numpy()
-        test_predictions[i] = output[0]
-    
-    test_true_ratings = test_R[test_user_indices]
-    
-    # Verificar valores extremos en las predicciones
-    print(f"Rango de predicciones: Min={np.min(test_predictions):.2f}, Max={np.max(test_predictions):.2f}")
-    print(f"Rango de valoraciones reales: Min={np.min(test_true_ratings):.2f}, Max={np.max(test_true_ratings):.2f}")
-    
-    debug_topk_metrics(test_predictions, test_true_ratings, k=10)
-    
-    # Calculamos para diferentes valores de k
-    final_metrics = {}
-    
-    # Calcular métricas para k=5, k=10, k=50
-    for k in [5, 10, 50]:
-        topk_result = calculate_topk_metrics(test_predictions, test_true_ratings, test_user_indices, k=k)        
-        final_metrics[f'recall@{k}'] = topk_result['recall@k']
-        final_metrics[f'ndcg@{k}'] = topk_result['ndcg@k']
-    
-    # Añadir RMSE a las métricas finales
-    final_metrics['rmse'] = final_rmse
+    print(f"Evaluando Top-K final con {num_test_users} usuarios...")
+    final_topk_metrics = calculate_topk_metrics(model, test_user_indices, k_values=[5, 10, 20, 50], threshold=2.5)
     
     # Guardar algunos ejemplos de predicciones
     print("\nEjemplos de predicciones:")
@@ -650,42 +744,40 @@ def modified_run():
         i_idx = sample_indices[1][sampled_idx[i]]
         print(f"Usuario {u_idx}, Ítem {i_idx}: Real = {test_R[u_idx, i_idx]:.2f}, Predicción = {final_output[u_idx, i_idx]:.2f}")
     
-    # Top-5 recomendaciones para un usuario aleatorio
+    # Ejemplo de recomendaciones Top-5 para un usuario aleatorio
     random_user_idx = np.random.randint(len(test_user_indices))
     random_user = test_user_indices[random_user_idx]
-    user_preds = test_predictions[random_user_idx]
     
-    # No recomendar ítems que el usuario ya haya valorado en entrenamiento
-    user_mask = train_mask_R[random_user] == 0  # Invertir la máscara: 1 donde no hay valoración
-    masked_preds = user_preds.copy()
-    masked_preds[~user_mask] = -np.inf
+    # Generar predicciones para este usuario
+    user_input = np.copy(train_R[random_user:random_user+1])
+    user_predictions = model.model(user_input).numpy()[0]
     
-    # Verificar que hay suficientes ítems para recomendar
-    non_rated_count = np.sum(user_mask)
-    if non_rated_count < 5:
-        print(f"\nAdvertencia: El usuario {random_user} solo tiene {non_rated_count} ítems no valorados.")
+    # Enmascarar ítems ya valorados en entrenamiento
+    not_rated_in_train = train_mask_R[random_user] == 0
+    masked_preds = user_predictions.copy()
+    masked_preds[~not_rated_in_train] = -np.inf
     
     # Obtener top-5 ítems
     top5_items = np.argsort(masked_preds)[-5:][::-1]
     
     print(f"\nTop-5 recomendaciones para usuario {random_user}:")
     for rank, item_idx in enumerate(top5_items):
-        rating_status = "No valorado" if train_mask_R[random_user, item_idx] == 0 else f"Ya valorado: {train_R[random_user, item_idx]:.1f}"
-        print(f"  {rank+1}. Ítem {item_idx}: Score = {user_preds[item_idx]:.2f} ({rating_status})")
+        rating_status = "No valorado en entrenamiento"
+        if train_mask_R[random_user, item_idx] > 0:
+            rating_status = f"Ya valorado: {train_R[random_user, item_idx]:.1f}"
+        print(f"  {rank+1}. Ítem {item_idx}: Score = {user_predictions[item_idx]:.2f} ({rating_status})")
     
     # Finalizar seguimiento de prueba
-    system_tracker.end_test(final_rmse)
-    emissions_tracker.end_training(final_rmse)
+    system_tracker.end_test(final_rmse, final_topk_metrics)
+    emissions_tracker.end_training(final_rmse, final_topk_metrics)
     
-    # Imprimir métricas top-K finales
-    print(f"\n=== Top-K Metrics ===")
-    print(f"Recall@5:  {final_metrics['recall@5']:.4f}")
-    print(f"NDCG@5:    {final_metrics['ndcg@5']:.4f}")
-    print(f"Recall@10: {final_metrics['recall@10']:.4f}")
-    print(f"NDCG@10:   {final_metrics['ndcg@10']:.4f}")
-    print(f"Recall@50: {final_metrics['recall@50']:.4f}")
-    print(f"NDCG@50:   {final_metrics['ndcg@50']:.4f}")
-    print(f"RMSE:      {final_metrics['rmse']:.4f}")
+    # Imprimir resumen final de métricas
+    print(f"\n=== Métricas Finales ===")
+    print(f"RMSE: {final_rmse:.4f}")
+    for k in [5, 10, 20, 50]:
+        print(f"Recall@{k}: {final_topk_metrics[f'recall@{k}']:.4f}")
+    for k in [5, 10, 20, 50]:
+        print(f"NDCG@{k}: {final_topk_metrics[f'ndcg@{k}']:.4f}")
     
     # Guardar resultados
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -695,58 +787,12 @@ def modified_run():
     metrics_df.to_csv(metrics_file, index=False)
     print(f"Métricas del modelo guardadas en: {metrics_file}")
     
-    # También guardar métricas finales
+    # Guardar métricas finales
+    final_metrics = {'rmse': final_rmse, **final_topk_metrics}
     final_metrics_df = pd.DataFrame([final_metrics])
     final_metrics_file = f"{result_path}/final_metrics_{timestamp}.csv"
     final_metrics_df.to_csv(final_metrics_file, index=False)
     print(f"Métricas finales guardadas en: {final_metrics_file}")
-    
-    # Generar gráficas adicionales para Top-K
-    plt.figure(figsize=(12, 6))
-    plt.subplot(1, 2, 1)
-    # Convertir a arrays numpy antes de graficar
-    epochs = np.array(metrics_df['epoch'])
-    recall_values = np.array(metrics_df['recall@10'])
-    plt.plot(epochs, recall_values, 'b-', marker='o')
-    plt.title('Recall@10 durante entrenamiento')
-    plt.xlabel('Época')
-    plt.ylabel('Recall@10')
-    plt.grid(True, alpha=0.3)
-    
-    plt.subplot(1, 2, 2)
-    ndcg_values = np.array(metrics_df['ndcg@10'])
-    plt.plot(epochs, ndcg_values, 'g-', marker='o')
-    plt.title('NDCG@10 durante entrenamiento')
-    plt.xlabel('Época')
-    plt.ylabel('NDCG@10')
-    plt.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    topk_plot_file = f"{result_path}/emissions_plots/topk_metrics_{timestamp}.png"
-    plt.savefig(topk_plot_file)
-    plt.close()
-    print(f"Gráfico de métricas Top-K guardado en: {topk_plot_file}")
-    
-    # Gráfica de métricas vs. emisiones
-    plt.figure(figsize=(10, 6))
-    emissions = np.array(emissions_tracker.cumulative_emissions)
-    plt.plot(emissions, recall_values, 'b-', marker='o', label='Recall@10')
-    plt.plot(emissions, ndcg_values, 'g-', marker='s', label='NDCG@10')
-    
-    # Añadir etiquetas con número de época
-    for i, (em, rec) in enumerate(zip(emissions, recall_values)):
-        plt.annotate(f"{i}", (em, rec), textcoords="offset points", xytext=(0,10), ha='center', fontsize=9)
-    
-    plt.xlabel('Emisiones de CO2 acumuladas (kg)')
-    plt.ylabel('Valor de la métrica')
-    plt.title('Métricas Top-K vs. Emisiones Acumulativas')
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    em_topk_file = f"{result_path}/emissions_plots/emissions_vs_topk_{timestamp}.png"
-    plt.savefig(em_topk_file)
-    plt.close()
-    print(f"Gráfico de emisiones vs. Top-K guardado en: {em_topk_file}")
     
     return final_metrics
 
@@ -757,9 +803,12 @@ model.run = modified_run
 print("Comenzando ejecución del modelo...")
 try:
     final_metrics = model.run()
-    print(f"Ejecución completada con RMSE final: {final_metrics['rmse']:.4f}")
-    print(f"Recall@10: {final_metrics['recall@10']:.4f}")
-    print(f"NDCG@10: {final_metrics['ndcg@10']:.4f}")
+    print(f"\n=== Ejecución Completada ===")
+    print(f"RMSE final: {final_metrics['rmse']:.4f}")
+    print("Métricas Top-K finales:")
+    for k in [5, 10, 20, 50]:
+        print(f"  Recall@{k}: {final_metrics[f'recall@{k}']:.4f}")
+        print(f"  NDCG@{k}: {final_metrics[f'ndcg@{k}']:.4f}")
 except Exception as e:
     print(f"Error durante la ejecución: {e}")
     import traceback

@@ -70,6 +70,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -79,13 +82,21 @@ class SystemMetricsTracker:
             'cpu_usage_percent': psutil.cpu_percent(),
         }
         
-    def end_epoch(self, epoch, loss, rmse=None):
+    def end_epoch(self, epoch, loss, rmse=None, mae=None):
         epoch_time = time.time() - self.epoch_start_time
         self.current_epoch_metrics['epoch_time_sec'] = epoch_time
         self.current_epoch_metrics['loss'] = loss
         if rmse is not None:
             self.current_epoch_metrics['rmse'] = rmse
+        if mae is not None:
+            self.current_epoch_metrics['mae'] = mae
         self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if rmse is not None and rmse < self.best_rmse:
+            self.best_rmse = rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
         
         # Imprimir resumen de época
         print(f"\nEpoch {epoch} Metrics:")
@@ -95,8 +106,10 @@ class SystemMetricsTracker:
         print(f"  Loss: {loss:.4f}")
         if rmse is not None:
             print(f"  RMSE: {rmse:.4f}")
+        if mae is not None:
+            print(f"  MAE: {mae:.4f}")
         
-    def end_test(self, rmse):
+    def end_test(self, rmse, mae=None):
         self.test_metrics = {
             'test_time_sec': time.time() - self.epoch_start_time,
             'total_time_sec': time.time() - self.start_time,
@@ -104,20 +117,37 @@ class SystemMetricsTracker:
             'final_cpu_usage_percent': psutil.cpu_percent(),
             'test_rmse': rmse,
         }
+        if mae is not None:
+            self.test_metrics['test_mae'] = mae
         
         # Imprimir métricas finales
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Loss={m['loss']:.4f}"
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%"
             if 'rmse' in m:
                 metrics_str += f", RMSE={m['rmse']:.4f}"
+            if 'mae' in m:
+                metrics_str += f", MAE={m['mae']:.4f}"
             print(metrics_str)
         
         print("\n=== Final Test Metrics ===")
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test RMSE: {rmse:.4f}")
+        print(f"RMSE: {rmse:.4f}")
+        if mae is not None:
+            print(f"MAE: {mae:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
+                if 'mae' in self.best_rmse_metrics and self.best_rmse_metrics['mae'] is not None:
+                    print(f"MAE: {self.best_rmse_metrics['mae']:.4f}")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -132,9 +162,14 @@ class EmissionsPerEpochTracker:
         self.epoch_emissions = []
         self.cumulative_emissions = []
         self.epoch_rmse = []
+        self.epoch_mae = []
         self.epoch_loss = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Crear directorio para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
@@ -177,7 +212,7 @@ class EmissionsPerEpochTracker:
             print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, loss, rmse=None):
+    def end_epoch(self, epoch, loss, rmse=None, mae=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -196,14 +231,24 @@ class EmissionsPerEpochTracker:
             self.epoch_loss.append(loss)
             if rmse is not None:
                 self.epoch_rmse.append(rmse)
+                # Rastrear el mejor RMSE y sus emisiones
+                if rmse < self.best_rmse:
+                    self.best_rmse = rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
+            if mae is not None:
+                self.epoch_mae.append(mae)
             
             print(f"Epoch {epoch} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg, Loss: {loss:.4f}")
             if rmse is not None:
                 print(f"RMSE: {rmse:.4f}")
+            if mae is not None:
+                print(f"MAE: {mae:.4f}")
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
     
-    def end_training(self, final_rmse):
+    def end_training(self, final_rmse, final_mae=None):
         try:
             # Detener el tracker principal
             final_emissions = 0.0
@@ -232,6 +277,8 @@ class EmissionsPerEpochTracker:
                 self.cumulative_emissions = [final_emissions]
                 if final_rmse is not None:
                     self.epoch_rmse = [final_rmse]
+                if final_mae is not None:
+                    self.epoch_mae = [final_mae]
             
             # Si no hay datos, salir
             if not self.epoch_emissions:
@@ -242,34 +289,56 @@ class EmissionsPerEpochTracker:
             if not self.epoch_rmse and final_rmse is not None:
                 self.epoch_rmse = [final_rmse] * len(self.epoch_emissions)
             
+            # Asegurarse de que tengamos un MAE final si no se rastreó por época
+            if not self.epoch_mae and final_mae is not None:
+                self.epoch_mae = [final_mae] * len(self.epoch_emissions)
+            
             # Crear dataframe con todos los datos
             timestamp = time.strftime("%Y%m%d-%H%M%S")
-            df = pd.DataFrame({
+            df_data = {
                 'epoch': range(len(self.epoch_emissions)),
                 'epoch_emissions_kg': self.epoch_emissions,
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss if self.epoch_loss else [0.0] * len(self.epoch_emissions),
                 'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions)
-            })
+            }
+            
+            # Añadir MAE solo si hay datos
+            if self.epoch_mae:
+                df_data['mae'] = self.epoch_mae
+            
+            df = pd.DataFrame(df_data)
             
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
             df.to_csv(emissions_file, index=False)
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
             
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
+            
             # Graficar las relaciones
-            self.plot_emissions_vs_metrics(timestamp, final_rmse)
+            self.plot_emissions_vs_metrics(timestamp, final_rmse, final_mae)
             
         except Exception as e:
             print(f"Error al generar gráficos de emisiones: {e}")
             import traceback
             traceback.print_exc()
+            
     
-    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None):
+    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None, final_mae=None):
         """Genera gráficos para emisiones vs métricas"""
         
         # Usar RMSE por época si está disponible, sino crear lista con el RMSE final
         if not self.epoch_rmse and final_rmse is not None:
             self.epoch_rmse = [final_rmse] * len(self.epoch_emissions)
+        
+        # Usar MAE por época si está disponible, sino crear lista con el MAE final
+        if not self.epoch_mae and final_mae is not None:
+            self.epoch_mae = [final_mae] * len(self.epoch_emissions)
         
         try:
             if self.epoch_rmse:
@@ -292,33 +361,48 @@ class EmissionsPerEpochTracker:
                 plt.close()
                 print(f"Gráfico guardado en: {file_path}")
             
-            # 2. Gráfico combinado: Emisiones por época y acumulativas
-            plt.figure(figsize=(12, 10))
+            # 2. Gráfico combinado: Emisiones por época y acumulativas con métricas
+            plt.figure(figsize=(15, 10))
             
-            plt.subplot(2, 2, 1)
+            plt.subplot(2, 3, 1)
             plt.plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
             plt.title('Emisiones por Época')
             plt.xlabel('Época')
             plt.ylabel('CO2 Emissions (kg)')
             
-            plt.subplot(2, 2, 2)
+            plt.subplot(2, 3, 2)
             plt.plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
             plt.title('Emisiones Acumuladas por Época')
             plt.xlabel('Época')
             plt.ylabel('CO2 Emissions (kg)')
             
+            if self.epoch_rmse:
+                plt.subplot(2, 3, 3)
+                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
+                plt.title('RMSE por Época')
+                plt.xlabel('Época')
+                plt.ylabel('RMSE')
+            
+            if self.epoch_mae:
+                plt.subplot(2, 3, 4)
+                plt.plot(range(len(self.epoch_mae)), self.epoch_mae, 'm-', marker='s')
+                plt.title('MAE por Época')
+                plt.xlabel('Época')
+                plt.ylabel('MAE')
+            
             if self.epoch_loss:
-                plt.subplot(2, 2, 3)
+                plt.subplot(2, 3, 5)
                 plt.plot(range(len(self.epoch_loss)), self.epoch_loss, 'g-', marker='o')
                 plt.title('Loss por Época')
                 plt.xlabel('Época')
                 plt.ylabel('Loss')
-            
+                
+            # Gráfico combinado de RMSE vs Emisiones Acumuladas
             if self.epoch_rmse:
-                plt.subplot(2, 2, 4)
-                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
-                plt.title('RMSE por Época')
-                plt.xlabel('Época')
+                plt.subplot(2, 3, 6)
+                plt.plot(self.cumulative_emissions, self.epoch_rmse, 'orange', marker='o')
+                plt.title('RMSE vs Emisiones Acumuladas')
+                plt.xlabel('Emisiones Acumuladas (kg)')
                 plt.ylabel('RMSE')
             
             plt.tight_layout()
@@ -328,8 +412,28 @@ class EmissionsPerEpochTracker:
             plt.close()
             print(f"Gráfico guardado en: {file_path}")
             
+            # 3. Gráfico específico para MAE vs Emisiones Acumuladas
+            if self.epoch_mae:
+                plt.figure(figsize=(10, 6))
+                plt.plot(self.cumulative_emissions, self.epoch_mae, 'purple', marker='s')
+                
+                # Añadir etiquetas con el número de época
+                for i, (emissions, mae) in enumerate(zip(self.cumulative_emissions, self.epoch_mae)):
+                    plt.annotate(f"{i}", (emissions, mae), textcoords="offset points", 
+                                xytext=(0,10), ha='center', fontsize=9)
+                    
+                plt.xlabel('Emisiones de CO2 acumuladas (kg)')
+                plt.ylabel('MAE')
+                plt.title('Relación entre Emisiones Acumuladas y MAE')
+                plt.grid(True, alpha=0.3)
+                
+                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_mae_{self.model_name}_{timestamp}.png'
+                plt.savefig(file_path)
+                plt.close()
+                print(f"Gráfico guardado en: {file_path}")
+            
             if self.epoch_rmse:
-                # 3. Scatter plot de rendimiento frente a emisiones acumulativas
+                # 4. Scatter plot de rendimiento frente a emisiones acumulativas
                 plt.figure(figsize=(10, 6))
                 
                 # Ajustar tamaño de los puntos según la época
@@ -368,21 +472,27 @@ model = AutoRec(args, num_users, num_items, R, mask_R, C, train_R, train_mask_R,
                 num_train_ratings, num_test_ratings, user_train_set, item_train_set, user_test_set, 
                 item_test_set, result_path)
 
-# Función para calcular RMSE
-def calculate_rmse(model, input_R, mask_R, num_test_ratings):
-    """Función para calcular RMSE independientemente"""
+# Función para calcular RMSE y MAE
+def calculate_metrics(model, input_R, mask_R, num_test_ratings):
+    """Función para calcular RMSE y MAE independientemente"""
     if np.sum(mask_R) == 0:
-        print("ADVERTENCIA: Máscara de valoraciones vacía al calcular RMSE!")
-        return 0.0, model.model(input_R)
+        print("ADVERTENCIA: Máscara de valoraciones vacía al calcular métricas!")
+        return 0.0, 0.0, model.model(input_R)
         
     output = model.model(input_R)
+    
+    # Calcular RMSE
     squared_error_sum = np.sum(np.square(input_R - output) * mask_R)
     rmse = np.sqrt(squared_error_sum / max(1, np.sum(mask_R)))
     
-    # Verificación adicional
-    print(f"Cálculo de RMSE - Suma de errores cuadrados: {squared_error_sum}, Valoraciones consideradas: {np.sum(mask_R)}")
+    # Calcular MAE
+    absolute_error_sum = np.sum(np.abs(input_R - output) * mask_R)
+    mae = absolute_error_sum / max(1, np.sum(mask_R))
     
-    return rmse, output
+    # Verificación adicional
+    print(f"Cálculo de métricas - Suma de errores cuadrados: {squared_error_sum}, Suma de errores absolutos: {absolute_error_sum}, Valoraciones consideradas: {np.sum(mask_R)}")
+    
+    return rmse, mae, output
 
 def modified_run():
     print("\nIniciando entrenamiento...")
@@ -423,26 +533,26 @@ def modified_run():
         avg_loss = total_loss / max(1, batch_count)
         model.train_cost_list.append(avg_loss)
         
-        # Calcular RMSE en el conjunto de validación
-        rmse, _ = calculate_rmse(model, test_R, test_mask_R, num_test_ratings)
+        # Calcular RMSE y MAE en el conjunto de validación
+        rmse, mae, _ = calculate_metrics(model, test_R, test_mask_R, num_test_ratings)
         test_loss = model.loss_function(test_R, test_mask_R, model.model(test_R)).numpy()
         
         model.test_cost_list.append(test_loss)
         model.test_rmse_list.append(rmse)
         
         # Finalizar seguimiento de época
-        system_tracker.end_epoch(epoch, avg_loss, rmse)
-        emissions_tracker.end_epoch(epoch, avg_loss, rmse)
+        system_tracker.end_epoch(epoch, avg_loss, rmse, mae)
+        emissions_tracker.end_epoch(epoch, avg_loss, rmse, mae)
         
         # Mostrar progreso
         if (epoch + 1) % model.display_step == 0:
-            print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Test RMSE: {rmse:.4f} | Time: {int(time.time() - start_time)}s")
+            print(f"Epoch {epoch+1} | Train Loss: {avg_loss:.4f} | Test RMSE: {rmse:.4f} | Test MAE: {mae:.4f} | Time: {int(time.time() - start_time)}s")
     
     print("\nEvaluando modelo en conjunto de prueba...")
     # Evaluar modelo en conjunto de prueba
     system_tracker.start_epoch("test")
     
-    final_rmse, final_output = calculate_rmse(model, test_R, test_mask_R, num_test_ratings)
+    final_rmse, final_mae, final_output = calculate_metrics(model, test_R, test_mask_R, num_test_ratings)
     
     # Guardar algunos ejemplos de predicciones
     print("\nEjemplos de predicciones:")
@@ -456,10 +566,21 @@ def modified_run():
         print(f"Usuario {u_idx}, Ítem {i_idx}: Real = {test_R[u_idx, i_idx]:.2f}, Predicción = {final_output[u_idx, i_idx]:.2f}")
     
     # Finalizar seguimiento de prueba
-    system_tracker.end_test(final_rmse)
-    emissions_tracker.end_training(final_rmse)
+    system_tracker.end_test(final_rmse, final_mae)
+    
+    # Pasar la información del mejor RMSE del system_tracker al emissions_tracker
+    if system_tracker.best_rmse_epoch is not None:
+        emissions_tracker.best_rmse = system_tracker.best_rmse
+        emissions_tracker.best_rmse_epoch = system_tracker.best_rmse_epoch
+        # Buscar las emisiones correspondientes al mejor epoch
+        if system_tracker.best_rmse_epoch < len(emissions_tracker.epoch_emissions):
+            emissions_tracker.best_rmse_emissions = emissions_tracker.epoch_emissions[system_tracker.best_rmse_epoch]
+            emissions_tracker.best_rmse_cumulative_emissions = emissions_tracker.cumulative_emissions[system_tracker.best_rmse_epoch]
+    
+    emissions_tracker.end_training(final_rmse, final_mae)
     
     print(f"Test RMSE: {final_rmse:.4f}")
+    print(f"Test MAE: {final_mae:.4f}")
     
     # Guardar resultados
     timestamp = time.strftime("%Y%m%d-%H%M%S")

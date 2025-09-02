@@ -1,0 +1,10 @@
+class_weights: null
+embedding_dim: 64
+l2_reg: 0.01
+lr: 0.001
+max_items: 4096
+num_items: 3953
+num_users: 6041
+rating_range: !!python/tuple
+- 1
+- 5

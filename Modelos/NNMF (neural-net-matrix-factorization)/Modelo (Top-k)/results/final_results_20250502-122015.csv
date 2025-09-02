@@ -1,2 +1,0 @@
-test_rmse,final_recall@5,final_recall@10,final_recall@20,final_ndcg@5,final_ndcg@10,final_ndcg@20
-"tf.Tensor(0.9822047, shape=(), dtype=float32)",0.0,0.0021128579023315867,0.003103367711545251,0.0,0.0022195023394306237,0.0028420025079350926

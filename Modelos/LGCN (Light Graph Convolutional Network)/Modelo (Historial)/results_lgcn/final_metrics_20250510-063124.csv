@@ -1,2 +1,0 @@
-final_memory_mb,final_cpu_percent,total_time_sec,final_recall,final_ndcg,final_rmse,timestamp
-1301.85546875,4.6,50382.38072681427,0.13477565759760535,0.2956667060692118,0.4123230032502648,20250510-063124

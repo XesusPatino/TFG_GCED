@@ -37,6 +37,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -46,13 +49,36 @@ class SystemMetricsTracker:
             'cpu_usage_percent': psutil.cpu_percent(),
         }
         
-    def end_epoch(self, epoch, train_rmse, valid_rmse=None):
+    def end_epoch(self, epoch, train_rmse, valid_rmse=None, recall_5=None, recall_10=None, recall_20=None, recall_50=None, 
+                 ndcg_5=None, ndcg_10=None, ndcg_20=None, ndcg_50=None):
         epoch_time = time.time() - self.epoch_start_time
         self.current_epoch_metrics['epoch_time_sec'] = epoch_time
         self.current_epoch_metrics['train_rmse'] = train_rmse
         if valid_rmse is not None:
             self.current_epoch_metrics['valid_rmse'] = valid_rmse
+        if recall_5 is not None:
+            self.current_epoch_metrics['recall_5'] = recall_5
+        if recall_10 is not None:
+            self.current_epoch_metrics['recall_10'] = recall_10
+        if recall_20 is not None:
+            self.current_epoch_metrics['recall_20'] = recall_20
+        if recall_50 is not None:
+            self.current_epoch_metrics['recall_50'] = recall_50
+        if ndcg_5 is not None:
+            self.current_epoch_metrics['ndcg_5'] = ndcg_5
+        if ndcg_10 is not None:
+            self.current_epoch_metrics['ndcg_10'] = ndcg_10
+        if ndcg_20 is not None:
+            self.current_epoch_metrics['ndcg_20'] = ndcg_20
+        if ndcg_50 is not None:
+            self.current_epoch_metrics['ndcg_50'] = ndcg_50
         self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if valid_rmse is not None and valid_rmse < self.best_rmse:
+            self.best_rmse = valid_rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
         
         # Imprimir resumen de época
         print(f"\nEpoch {epoch} Metrics:")
@@ -62,29 +88,63 @@ class SystemMetricsTracker:
         print(f"  Train RMSE: {train_rmse:.4f}")
         if valid_rmse is not None:
             print(f"  Valid RMSE: {valid_rmse:.4f}")
+        if recall_5 is not None and recall_10 is not None:
+            print(f"  Recall@5: {recall_5:.4f}, Recall@10: {recall_10:.4f}")
+        if ndcg_5 is not None and ndcg_10 is not None:
+            print(f"  NDCG@5: {ndcg_5:.4f}, NDCG@10: {ndcg_10:.4f}")
         
-    def end_test(self, test_rmse):
+    def end_test(self, test_rmse, recall_5=None, recall_10=None, recall_20=None, recall_50=None, 
+                 ndcg_5=None, ndcg_10=None, ndcg_20=None, ndcg_50=None):
         self.test_metrics = {
             'test_time_sec': time.time() - self.epoch_start_time,
             'total_time_sec': time.time() - self.start_time,
             'final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
             'final_cpu_usage_percent': psutil.cpu_percent(),
             'test_rmse': test_rmse,
+            'recall_5': recall_5,
+            'recall_10': recall_10,
+            'recall_20': recall_20,
+            'recall_50': recall_50,
+            'ndcg_5': ndcg_5,
+            'ndcg_10': ndcg_10,
+            'ndcg_20': ndcg_20,
+            'ndcg_50': ndcg_50,
         }
         
         # Imprimir métricas finales
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Train RMSE={m['train_rmse']:.4f}"
-            if 'valid_rmse' in m:
-                metrics_str += f", Valid RMSE={m['valid_rmse']:.4f}"
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, RMSE={m['train_rmse']:.4f}"
+            if 'recall_5' in m and 'recall_10' in m and m['recall_5'] is not None:
+                metrics_str += f", Recall@5={m['recall_5']:.4f}, Recall@10={m['recall_10']:.4f}"
+            if 'ndcg_5' in m and 'ndcg_10' in m and m['ndcg_5'] is not None:
+                metrics_str += f", NDCG@5={m['ndcg_5']:.4f}, NDCG@10={m['ndcg_10']:.4f}"
             print(metrics_str)
         
         print("\n=== Final Test Metrics ===")
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test RMSE: {test_rmse:.4f}")
+        print(f"RMSE: {test_rmse:.4f}")
+        if recall_5 is not None:
+            print(f"Recall@5: {recall_5:.4f}")
+            print(f"Recall@10: {recall_10:.4f}")
+            print(f"Recall@20: {recall_20:.4f}")
+            print(f"Recall@50: {recall_50:.4f}")
+        if ndcg_5 is not None:
+            print(f"NDCG@5: {ndcg_5:.4f}")
+            print(f"NDCG@10: {ndcg_10:.4f}")
+            print(f"NDCG@20: {ndcg_20:.4f}")
+            print(f"NDCG@50: {ndcg_50:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -107,8 +167,20 @@ class EmissionsPerEpochTracker:
         self.cumulative_emissions = []
         self.epoch_train_rmse = []
         self.epoch_valid_rmse = []
+        self.epoch_recall_5 = []
+        self.epoch_recall_10 = []
+        self.epoch_recall_20 = []
+        self.epoch_recall_50 = []
+        self.epoch_ndcg_5 = []
+        self.epoch_ndcg_10 = []
+        self.epoch_ndcg_20 = []
+        self.epoch_ndcg_50 = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Crear directorios para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
@@ -151,7 +223,8 @@ class EmissionsPerEpochTracker:
             print(f"Warning: Could not start tracker for epoch {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, train_rmse, valid_rmse=None):
+    def end_epoch(self, epoch, train_rmse, valid_rmse=None, recall_5=None, recall_10=None, recall_20=None, recall_50=None, 
+                 ndcg_5=None, ndcg_10=None, ndcg_20=None, ndcg_50=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -170,9 +243,37 @@ class EmissionsPerEpochTracker:
             self.epoch_train_rmse.append(train_rmse)
             if valid_rmse is not None:
                 self.epoch_valid_rmse.append(valid_rmse)
+                # Rastrear el mejor RMSE y sus emisiones
+                if valid_rmse < self.best_rmse:
+                    self.best_rmse = valid_rmse
+                    self.best_rmse_epoch = epoch
+                    self.best_rmse_emissions = epoch_co2
+                    self.best_rmse_cumulative_emissions = self.total_emissions
+            if recall_5 is not None:
+                self.epoch_recall_5.append(recall_5)
+            if recall_10 is not None:
+                self.epoch_recall_10.append(recall_10)
+            if recall_20 is not None:
+                self.epoch_recall_20.append(recall_20)
+            if recall_50 is not None:
+                self.epoch_recall_50.append(recall_50)
+            if ndcg_5 is not None:
+                self.epoch_ndcg_5.append(ndcg_5)
+            if ndcg_10 is not None:
+                self.epoch_ndcg_10.append(ndcg_10)
+            if ndcg_20 is not None:
+                self.epoch_ndcg_20.append(ndcg_20)
+            if ndcg_50 is not None:
+                self.epoch_ndcg_50.append(ndcg_50)
             
             print(f"Epoch {epoch} - Emissions: {epoch_co2:.8f} kg, Cumulative: {self.total_emissions:.8f} kg")
-            print(f"Train RMSE: {train_rmse:.4f}, Valid RMSE: {valid_rmse:.4f}")
+            print(f"Train RMSE: {train_rmse:.4f}")
+            if valid_rmse is not None:
+                print(f"Valid RMSE: {valid_rmse:.4f}")
+            if recall_5 is not None and recall_10 is not None:
+                print(f"Recall@5: {recall_5:.4f}, Recall@10: {recall_10:.4f}")
+            if ndcg_5 is not None and ndcg_10 is not None:
+                print(f"NDCG@5: {ndcg_5:.4f}, NDCG@10: {ndcg_10:.4f}")
         except Exception as e:
             print(f"Error measuring emissions in epoch {epoch}: {e}")
     
@@ -222,12 +323,35 @@ class EmissionsPerEpochTracker:
             
             if self.epoch_valid_rmse:
                 data['valid_rmse'] = self.epoch_valid_rmse
+            if self.epoch_recall_5:
+                data['recall_5'] = self.epoch_recall_5
+            if self.epoch_recall_10:
+                data['recall_10'] = self.epoch_recall_10
+            if self.epoch_recall_20:
+                data['recall_20'] = self.epoch_recall_20
+            if self.epoch_recall_50:
+                data['recall_50'] = self.epoch_recall_50
+            if self.epoch_ndcg_5:
+                data['ndcg_5'] = self.epoch_ndcg_5
+            if self.epoch_ndcg_10:
+                data['ndcg_10'] = self.epoch_ndcg_10
+            if self.epoch_ndcg_20:
+                data['ndcg_20'] = self.epoch_ndcg_20
+            if self.epoch_ndcg_50:
+                data['ndcg_50'] = self.epoch_ndcg_50
                 
             df = pd.DataFrame(data)
             
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
             df.to_csv(emissions_file, index=False)
             print(f"Emission metrics saved to: {emissions_file}")
+            
+            # Mostrar información del mejor RMSE y sus emisiones
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
             
             # Graficar las relaciones
             self.plot_emissions_vs_metrics(timestamp, final_rmse)
@@ -261,33 +385,62 @@ class EmissionsPerEpochTracker:
                 plt.close()
                 print(f"Graph saved to: {file_path}")
             
-            # 2. Combined graph: Emissions per epoch and cumulative
-            plt.figure(figsize=(12, 10))
+            # 2. Combined graph: Emissions per epoch and cumulative - Layout 2x3 para ranking metrics
+            plt.figure(figsize=(18, 12))
             
-            plt.subplot(2, 2, 1)
+            plt.subplot(2, 3, 1)
             plt.plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
             plt.title('Emissions per Epoch')
             plt.xlabel('Epoch')
             plt.ylabel('CO2 Emissions (kg)')
             
-            plt.subplot(2, 2, 2)
+            plt.subplot(2, 3, 2)
             plt.plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
             plt.title('Cumulative Emissions per Epoch')
             plt.xlabel('Epoch')
             plt.ylabel('CO2 Emissions (kg)')
             
-            plt.subplot(2, 2, 3)
+            plt.subplot(2, 3, 3)
             plt.plot(range(len(self.epoch_train_rmse)), self.epoch_train_rmse, 'g-', marker='o')
             plt.title('Train RMSE per Epoch')
             plt.xlabel('Epoch')
             plt.ylabel('Train RMSE')
             
             if self.epoch_valid_rmse:
-                plt.subplot(2, 2, 4)
+                plt.subplot(2, 3, 4)
                 plt.plot(range(len(self.epoch_valid_rmse)), self.epoch_valid_rmse, 'b-', marker='o')
                 plt.title('Validation RMSE per Epoch')
                 plt.xlabel('Epoch')
                 plt.ylabel('Validation RMSE')
+            
+            # Añadir métricas de ranking
+            if self.epoch_recall_5:
+                plt.subplot(2, 3, 5)
+                plt.plot(range(len(self.epoch_recall_5)), self.epoch_recall_5, 'm-', marker='s', label='Recall@5')
+                if self.epoch_recall_10:
+                    plt.plot(range(len(self.epoch_recall_10)), self.epoch_recall_10, 'm--', marker='^', label='Recall@10')
+                if self.epoch_recall_20:
+                    plt.plot(range(len(self.epoch_recall_20)), self.epoch_recall_20, 'm:', marker='o', label='Recall@20')
+                if self.epoch_recall_50:
+                    plt.plot(range(len(self.epoch_recall_50)), self.epoch_recall_50, 'm-.', marker='d', label='Recall@50')
+                plt.title('Recall per Epoch')
+                plt.xlabel('Epoch')
+                plt.ylabel('Recall')
+                plt.legend()
+                
+            if self.epoch_ndcg_5:
+                plt.subplot(2, 3, 6)
+                plt.plot(range(len(self.epoch_ndcg_5)), self.epoch_ndcg_5, 'c-', marker='s', label='NDCG@5')
+                if self.epoch_ndcg_10:
+                    plt.plot(range(len(self.epoch_ndcg_10)), self.epoch_ndcg_10, 'c--', marker='^', label='NDCG@10')
+                if self.epoch_ndcg_20:
+                    plt.plot(range(len(self.epoch_ndcg_20)), self.epoch_ndcg_20, 'c:', marker='o', label='NDCG@20')
+                if self.epoch_ndcg_50:
+                    plt.plot(range(len(self.epoch_ndcg_50)), self.epoch_ndcg_50, 'c-.', marker='d', label='NDCG@50')
+                plt.title('NDCG per Epoch')
+                plt.xlabel('Epoch')
+                plt.ylabel('NDCG')
+                plt.legend()
             
             plt.tight_layout()
             
@@ -362,8 +515,8 @@ def generate_recommendations(model, user_ids, item_ids, k=10, batch_size=1024):
                 # Create a fake ratings tensor to comply with the model's predict method
                 fake_ratings = tf.ones_like(batch_users_tensor, dtype=tf.float32)
                 
-                # Make prediction using model's __call__ method directly
-                preds = model(batch_users_tensor, batch_items_tensor)
+                # Make prediction using model's __call__ method directly with correct input format
+                preds = model([batch_users_tensor, batch_items_tensor], training=False)
                 
                 # If prediction is a tensor, convert to numpy array
                 if isinstance(preds, tf.Tensor):
@@ -542,9 +695,20 @@ def train(model, train_data, valid_data, test_data, batch_size, max_epochs, use_
             top_k_metrics[f'recall@{k}'].append(epoch_metrics.get(f'recall@{k}', 0))
             top_k_metrics[f'ndcg@{k}'].append(epoch_metrics.get(f'ndcg@{k}', 0))
         
-        # End tracking for this epoch
-        system_tracker.end_epoch(epoch, train_rmse, valid_rmse)
-        emissions_tracker.end_epoch(epoch, train_rmse, valid_rmse)
+        # End tracking for this epoch with ranking metrics
+        recall_5 = epoch_metrics.get('recall@5', 0)
+        recall_10 = epoch_metrics.get('recall@10', 0)
+        recall_20 = epoch_metrics.get('recall@20', 0)
+        recall_50 = epoch_metrics.get('recall@50', 0)
+        ndcg_5 = epoch_metrics.get('ndcg@5', 0)
+        ndcg_10 = epoch_metrics.get('ndcg@10', 0)
+        ndcg_20 = epoch_metrics.get('ndcg@20', 0)
+        ndcg_50 = epoch_metrics.get('ndcg@50', 0)
+        
+        system_tracker.end_epoch(epoch, train_rmse, valid_rmse, recall_5, recall_10, recall_20, recall_50, 
+                                ndcg_5, ndcg_10, ndcg_20, ndcg_50)
+        emissions_tracker.end_epoch(epoch, train_rmse, valid_rmse, recall_5, recall_10, recall_20, recall_50, 
+                                   ndcg_5, ndcg_10, ndcg_20, ndcg_50)
         
         # Print epoch results
         print(f"[{epoch}] Train RMSE: {train_rmse:.3f}; Valid RMSE: {valid_rmse:.3f}")
@@ -575,12 +739,24 @@ def train(model, train_data, valid_data, test_data, batch_size, max_epochs, use_
     system_tracker.start_epoch("test")
     test_rmse = model.eval_rmse(test_data)
     
-    # Calculate final top-k metrics on test data
+    # Calculate final top-k metrics on test data - need @5, @10, @20, @50
+    final_test_k_values = [5, 10, 20, 50]
     final_metrics = calculate_topk_metrics(
-        model, test_data, train_data, user_pos_items, all_item_ids, top_k_values
+        model, test_data, train_data, user_pos_items, all_item_ids, final_test_k_values
     )
     
-    system_tracker.end_test(test_rmse)
+    # Extract specific test metrics for end_test call
+    test_recall_5 = final_metrics.get('recall@5', 0)
+    test_recall_10 = final_metrics.get('recall@10', 0)
+    test_recall_20 = final_metrics.get('recall@20', 0)
+    test_recall_50 = final_metrics.get('recall@50', 0)
+    test_ndcg_5 = final_metrics.get('ndcg@5', 0)
+    test_ndcg_10 = final_metrics.get('ndcg@10', 0)
+    test_ndcg_20 = final_metrics.get('ndcg@20', 0)
+    test_ndcg_50 = final_metrics.get('ndcg@50', 0)
+    
+    system_tracker.end_test(test_rmse, test_recall_5, test_recall_10, test_recall_20, test_recall_50,
+                           test_ndcg_5, test_ndcg_10, test_ndcg_20, test_ndcg_50)
     
     # Save training history
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -617,7 +793,7 @@ def train(model, train_data, valid_data, test_data, batch_size, max_epochs, use_
     
     # Print final top-k metrics
     print("\n=== Final Top-K Metrics ===")
-    for k in top_k_values:
+    for k in final_test_k_values:
         print(f"Recall@{k}: {final_metrics.get(f'recall@{k}', 0):.4f}, NDCG@{k}: {final_metrics.get(f'ndcg@{k}', 0):.4f}")
     
     return test_rmse, best_model_path, final_metrics
@@ -644,7 +820,7 @@ if __name__ == '__main__':
     parser.add_argument('--early-stop-max-epoch', type=int, default=40)
     parser.add_argument('--model-params', type=str, default='{}')
     parser.add_argument('--result-path', type=str, default='results')
-    parser.add_argument('--top-k', type=str, default='5,10,20', help='Comma-separated list of top-k values for evaluation')
+    parser.add_argument('--top-k', type=str, default='5,10,20,50', help='Comma-separated list of top-k values for evaluation')
 
     args = parser.parse_args()
 

@@ -18,7 +18,12 @@ def load_rating(args):
     if os.path.exists(rating_file + '.npy'):
         rating_np = np.load(rating_file + '.npy')
     else:
-        rating_np = np.loadtxt(rating_file + '.txt', dtype=np.int64)
+        # Use float64 to handle rating values 1.0-5.0, then convert user/item to int
+        rating_np = np.loadtxt(rating_file + '.txt', dtype=np.float64)
+        # Convert user and item indices to int64, keep ratings as float
+        rating_np[:, 0] = rating_np[:, 0].astype(np.int64)  # user
+        rating_np[:, 1] = rating_np[:, 1].astype(np.int64)  # item
+        # rating column (2) stays as float
         np.save(rating_file + '.npy', rating_np)
 
     n_user = len(set(rating_np[:, 0]))

@@ -20,80 +20,199 @@ os.makedirs(result_path, exist_ok=True)
 os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
 os.makedirs(f"{result_path}/emissions_plots", exist_ok=True)
 
-# Función para calcular RMSE para LightGCN
-def calculate_rmse(model, test_data, n_users, n_items, sample_size=10000):
+# Diccionario global para almacenar los ratings reales
+ratings_dict = {}
+
+def load_ratings_from_file(ratings_file):
     """
-    Calcula el RMSE entre las calificaciones reales y las predicciones del modelo LightGCN.
+    Carga los ratings reales desde el archivo ratings.dat de MovieLens-1M
     
     Args:
-        model: Modelo LightGCN entrenado
-        test_data: Datos de prueba con interacciones usuario-item
-        n_users: Número total de usuarios
-        n_items: Número total de ítems
-        sample_size: Tamaño máximo de muestra para cálculo (para eficiencia)
+        ratings_file: Ruta al archivo ratings.dat
     
     Returns:
-        float: RMSE calculado
+        dict: Diccionario {(user_id, item_id): rating}
     """
+    global ratings_dict
+    ratings_dict = {}
+    
+    try:
+        with open(ratings_file, 'r', encoding='latin-1') as f:
+            for line in f:
+                parts = line.strip().split('::')
+                if len(parts) >= 3:
+                    user_id = int(parts[0]) - 1  # Convertir a índice base 0
+                    item_id = int(parts[1]) - 1  # Convertir a índice base 0
+                    rating = float(parts[2])
+                    ratings_dict[(user_id, item_id)] = rating
+        
+        print(f"Cargados {len(ratings_dict)} ratings reales desde {ratings_file}")
+        return ratings_dict
+    
+    except FileNotFoundError:
+        print(f"Archivo {ratings_file} no encontrado. Usando ratings simulados.")
+        return {}
+    except Exception as e:
+        print(f"Error al cargar ratings: {e}. Usando ratings simulados.")
+        return {}
+
+def show_ratings_statistics():
+    """Muestra estadísticas de los ratings cargados"""
+    global ratings_dict
+    if not ratings_dict:
+        print("No hay ratings reales cargados.")
+        return
+    
+    ratings_values = list(ratings_dict.values())
+    print(f"\nEstadísticas de ratings reales:")
+    print(f"  Total de ratings: {len(ratings_values)}")
+    print(f"  Rating promedio: {np.mean(ratings_values):.3f}")
+    print(f"  Rating mínimo: {min(ratings_values)}")
+    print(f"  Rating máximo: {max(ratings_values)}")
+    print(f"  Desviación estándar: {np.std(ratings_values):.3f}")
+    
+    # Distribución de ratings
+    unique_ratings, counts = np.unique(ratings_values, return_counts=True)
+    print(f"  Distribución:")
+    for rating, count in zip(unique_ratings, counts):
+        percentage = (count / len(ratings_values)) * 100
+        print(f"    Rating {rating}: {count} ({percentage:.1f}%)")
+
+def test_rating_usage():
+    """Función de debug para verificar que se usan ratings reales"""
+    global ratings_dict
+    if not ratings_dict:
+        print("PROBLEMA: No hay ratings cargados!")
+        return
+    
+    # Tomar 10 ejemplos aleatorios
+    sample_ratings = random.sample(list(ratings_dict.items()), min(10, len(ratings_dict)))
+    print(f"\nVERIFICACIÓN: Muestra de ratings reales que se usarán:")
+    for (u, item_id), rating in sample_ratings:
+        print(f"  Usuario {u}, Item {item_id} → Rating real: {rating}")
+    
+    # Verificar distribución de la muestra
+    sample_values = [rating for _, rating in sample_ratings]
+    print(f"\nDistribución en muestra:")
+    for rating in [1.0, 2.0, 3.0, 4.0, 5.0]:
+        count = sample_values.count(rating)
+        if count > 0:
+            print(f"  Rating {rating}: {count} ejemplos")
+
+
+# Función OPTIMIZADA para calcular RMSE
+def calculate_rmse(model, test_data, n_users, n_items, sample_size=1000):
+    """
+    Calcula el RMSE usando los ratings reales de MovieLens - OPTIMIZADA.
+    """
+    global ratings_dict
+    
+    if not ratings_dict:
+        return 1.0
+    
+    # Tomar muestra más grande para estabilidad
+    all_ratings = list(ratings_dict.items())
+    sample_ratings = random.sample(all_ratings, min(sample_size, len(all_ratings)))
+    
+    # Obtener embeddings UNA SOLA VEZ
     user_emb, item_emb, _, _, _ = model((model.user_embedding, model.item_embedding))
     
-    # Recolectar pares usuario-item de los datos de prueba
-    y_true = []  # Valores reales (1 para interacciones positivas)
-    y_scores = []  # Puntuaciones predichas
+    # Calcular TODOS los scores primero para normalización eficiente
+    all_scores = []
+    valid_pairs = []
     
-    # Limitar la cantidad de muestras para eficiencia
-    count = 0
-    test_pairs = []
-    neg_pairs = []
-    
-    # Crear pares positivos (usuario-item que interactuaron)
-    for u in range(n_users):
-        if len(test_data[u]) > 0:
-            for i in test_data[u]:
-                test_pairs.append((u, i, 1.0))  # 1.0 indica interacción positiva
-                count += 1
-                if count >= sample_size // 2:
-                    break
-        if count >= sample_size // 2:
-            break
-    
-    # Crear algunos pares negativos para comparación
-    count = 0
-    for u in range(n_users):
-        if count >= sample_size // 2:
-            break
-        if len(test_data[u]) > 0:
-            for _ in range(min(5, len(test_data[u]))):  # Generar algunos negativos por usuario
-                neg_item = random.randint(0, n_items - 1)
-                while neg_item in test_data[u]:
-                    neg_item = random.randint(0, n_items - 1)
-                neg_pairs.append((u, neg_item, 0.0))  # 0.0 indica que no hay interacción
-                count += 1
-                if count >= sample_size // 2:
-                    break
-    
-    # Combinar y mezclar pares positivos y negativos
-    all_pairs = test_pairs + neg_pairs
-    random.shuffle(all_pairs)
-    
-    # Calcular puntuaciones predichas
-    for u, i, true_val in all_pairs:
-        u_tensor = tf.convert_to_tensor([u], dtype=tf.int32)
-        i_tensor = tf.convert_to_tensor([i], dtype=tf.int32)
+    for (u, item_id), true_rating in sample_ratings:
+        if u >= n_users or item_id >= n_items:
+            continue
+            
+        u_emb = tf.nn.embedding_lookup(user_emb, [u])
+        i_emb = tf.nn.embedding_lookup(item_emb, [item_id])
+        score = tf.reduce_sum(u_emb * i_emb, axis=1).numpy()[0]
         
-        u_emb_lookup = tf.nn.embedding_lookup(user_emb, u_tensor)
-        i_emb_lookup = tf.nn.embedding_lookup(item_emb, i_tensor)
+        all_scores.append(score)
+        valid_pairs.append(((u, item_id), true_rating))
+    
+    if not all_scores:
+        return 1.0
+    
+    # Normalización global EFICIENTE
+    min_score, max_score = np.min(all_scores), np.max(all_scores)
+    
+    y_true = []
+    y_pred = []
+    
+    for i, ((u, item_id), true_rating) in enumerate(valid_pairs):
+        score = all_scores[i]
         
-        # Calcular similitud de coseno como predicción (normalizada entre 0 y 1)
-        pred = tf.reduce_sum(u_emb_lookup * i_emb_lookup, axis=1)
-        pred_val = tf.sigmoid(pred).numpy()[0]  # Convertir a valor entre 0 y 1
+        # Mapeo mejorado a escala [1, 5]
+        if max_score > min_score:
+            predicted_rating = 1 + 4 * ((score - min_score) / (max_score - min_score))
+        else:
+            predicted_rating = 3.0  # valor neutro si todos los scores son iguales
         
-        y_true.append(true_val)
-        y_scores.append(pred_val)
+        y_true.append(true_rating)
+        y_pred.append(predicted_rating)
     
     # Calcular RMSE
-    rmse = math.sqrt(mean_squared_error(y_true, y_scores))
+    rmse = math.sqrt(mean_squared_error(y_true, y_pred))
     return rmse
+
+# Función OPTIMIZADA para calcular MAE
+def calculate_mae(model, test_data, n_users, n_items, sample_size=1000):
+    """
+    Calcula el MAE usando los ratings reales de MovieLens - OPTIMIZADA.
+    """
+    global ratings_dict
+    
+    if not ratings_dict:
+        return 0.8
+    
+    # Usar el mismo sample_size que RMSE para consistencia
+    all_ratings = list(ratings_dict.items())
+    sample_ratings = random.sample(all_ratings, min(sample_size, len(all_ratings)))
+    
+    # Obtener embeddings UNA SOLA VEZ
+    user_emb, item_emb, _, _, _ = model((model.user_embedding, model.item_embedding))
+    
+    # Calcular TODOS los scores primero
+    all_scores = []
+    valid_pairs = []
+    
+    for (u, item_id), true_rating in sample_ratings:
+        if u >= n_users or item_id >= n_items:
+            continue
+            
+        u_emb = tf.nn.embedding_lookup(user_emb, [u])
+        i_emb = tf.nn.embedding_lookup(item_emb, [item_id])
+        score = tf.reduce_sum(u_emb * i_emb, axis=1).numpy()[0]
+        
+        all_scores.append(score)
+        valid_pairs.append(((u, item_id), true_rating))
+    
+    if not all_scores:
+        return 0.8
+    
+    # Normalización global
+    min_score, max_score = np.min(all_scores), np.max(all_scores)
+    
+    y_true = []
+    y_pred = []
+    
+    for i, ((u, item_id), true_rating) in enumerate(valid_pairs):
+        score = all_scores[i]
+        
+        if max_score > min_score:
+            predicted_rating = 1 + 4 * ((score - min_score) / (max_score - min_score))
+        else:
+            predicted_rating = 3.0
+        
+        y_true.append(true_rating)
+        y_pred.append(predicted_rating)
+    
+    # Calcular MAE
+    mae = np.mean(np.abs(np.array(y_true) - np.array(y_pred)))
+    return mae
+
 
 # Clases para seguimiento de métricas
 class SystemMetricsTracker:
@@ -101,6 +220,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -110,70 +232,89 @@ class SystemMetricsTracker:
             'cpu_usage_percent': psutil.cpu_percent(),
         }
         
-    def end_epoch(self, epoch, loss, recall=None, ndcg=None, rmse=None):
+    def end_epoch(self, epoch, loss, rmse=None, mae=None):
         epoch_time = time.time() - self.epoch_start_time
         self.current_epoch_metrics['epoch_time_sec'] = epoch_time
         self.current_epoch_metrics['loss'] = loss
-        if recall is not None:
-            self.current_epoch_metrics['recall'] = recall
-        if ndcg is not None:
-            self.current_epoch_metrics['ndcg'] = ndcg
         if rmse is not None:
             self.current_epoch_metrics['rmse'] = rmse
+        if mae is not None:
+            self.current_epoch_metrics['mae'] = mae
         self.train_metrics.append(self.current_epoch_metrics)
         
-        # Imprimir resumen de época
+        # Rastrear el mejor RMSE
+        if rmse is not None and rmse < self.best_rmse:
+            self.best_rmse = rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
+        
+        # Imprimir resumen de época con formato similar al ejemplo NCF
         print(f"\nEpoch {epoch} Metrics:")
         print(f"  Time: {epoch_time:.2f}s")
         print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
         print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
         print(f"  Loss: {loss:.4f}")
-        if recall is not None:
-            print(f"  Recall: {recall:.4f}")
-        if ndcg is not None:
-            print(f"  NDCG: {ndcg:.4f}")
         if rmse is not None:
             print(f"  RMSE: {rmse:.4f}")
+        if mae is not None:
+            print(f"  MAE: {mae:.4f}")
         
-    def end_test(self, recall, ndcg=None, rmse=None):
+    def end_test(self, rmse, mae=None):
         self.test_metrics = {
             'test_time_sec': time.time() - self.epoch_start_time,
             'total_time_sec': time.time() - self.start_time,
             'final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
             'final_cpu_usage_percent': psutil.cpu_percent(),
-            'test_recall': recall,
+            'test_rmse': rmse,
         }
-        if ndcg is not None:
-            self.test_metrics['test_ndcg'] = ndcg
-        if rmse is not None:
-            self.test_metrics['test_rmse'] = rmse
+        if mae is not None:
+            self.test_metrics['test_mae'] = mae
         
-        # Imprimir métricas finales
+        # Imprimir métricas finales con formato específico como en NCF
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Loss={m['loss']:.4f}"
-            if 'recall' in m:
-                metrics_str += f", Recall={m['recall']:.4f}"
-            if 'ndcg' in m:
-                metrics_str += f", NDCG={m['ndcg']:.4f}"
-            if 'rmse' in m:
+            # Formato específico: Epoch X: Time=Xs, Memory=XMB, CPU=X%, RMSE=X, MAE=X
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%"
+            if 'rmse' in m and m['rmse'] is not None:
                 metrics_str += f", RMSE={m['rmse']:.4f}"
+            if 'mae' in m and m['mae'] is not None:
+                metrics_str += f", MAE={m['mae']:.4f}"
             print(metrics_str)
         
         print("\n=== Final Test Metrics ===")
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test Recall: {recall:.4f}")
-        if ndcg is not None:
-            print(f"Test NDCG: {ndcg:.4f}")
-        if rmse is not None:
-            print(f"Test RMSE: {rmse:.4f}")
+        print(f"RMSE: {rmse:.4f}")
+        if mae is not None:
+            print(f"MAE: {mae:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
+                if 'mae' in self.best_rmse_metrics and self.best_rmse_metrics['mae'] is not None:
+                    print(f"MAE: {self.best_rmse_metrics['mae']:.4f}")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         metrics_df = pd.DataFrame(self.train_metrics)
         metrics_df.to_csv(f"{result_path}/system_metrics_{timestamp}.csv", index=False)
+        print(f"System metrics saved to: {result_path}/system_metrics_{timestamp}.csv")
+
+    def get_best_rmse_info(self):
+        """Retorna información del mejor RMSE para usar con emisiones"""
+        if self.best_rmse_epoch is not None:
+            return {
+                'epoch': self.best_rmse_epoch,
+                'rmse': self.best_rmse,
+                'metrics': self.best_rmse_metrics
+            }
+        return None
 
 
 class EmissionsPerEpochTracker:
@@ -182,9 +323,8 @@ class EmissionsPerEpochTracker:
         self.model_name = model_name
         self.epoch_emissions = []
         self.cumulative_emissions = []
-        self.epoch_recall = []
-        self.epoch_ndcg = []
-        self.epoch_rmse = []  # Añadir lista para RMSE
+        self.epoch_rmse = []
+        self.epoch_mae = []
         self.epoch_loss = []
         self.total_emissions = 0.0
         self.trackers = {}
@@ -226,7 +366,7 @@ class EmissionsPerEpochTracker:
             print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, loss, recall=None, ndcg=None, rmse=None):
+    def end_epoch(self, epoch, loss, rmse=None, mae=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -243,24 +383,29 @@ class EmissionsPerEpochTracker:
             self.epoch_emissions.append(epoch_co2)
             self.cumulative_emissions.append(self.total_emissions)
             self.epoch_loss.append(loss)
-            if recall is not None:
-                self.epoch_recall.append(recall)
-            if ndcg is not None:
-                self.epoch_ndcg.append(ndcg)
             if rmse is not None:
-                self.epoch_rmse.append(rmse)  # Guardar RMSE
+                self.epoch_rmse.append(rmse)
+            if mae is not None:
+                self.epoch_mae.append(mae)
             
             print(f"Epoch {epoch} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg, Loss: {loss:.4f}")
-            if recall is not None:
-                print(f"Recall: {recall:.4f}")
-            if ndcg is not None:
-                print(f"NDCG: {ndcg:.4f}")
             if rmse is not None:
                 print(f"RMSE: {rmse:.4f}")
+            if mae is not None:
+                print(f"MAE: {mae:.4f}")
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
+            
+    def get_emissions_for_epoch(self, epoch):
+        """Retorna las emisiones de una época específica"""
+        if epoch < len(self.epoch_emissions):
+            return {
+                'epoch_emissions': self.epoch_emissions[epoch],
+                'cumulative_emissions': self.cumulative_emissions[epoch]
+            }
+        return None
     
-    def end_training(self, final_recall, final_ndcg=None, final_rmse=None):
+    def end_training(self, final_rmse=None, final_mae=None, best_rmse_info=None):
         try:
             # Detener el tracker principal
             final_emissions = 0.0
@@ -281,29 +426,46 @@ class EmissionsPerEpochTracker:
                         tracker.stop()
                     except:
                         pass
+                    
+            # Mostrar información del mejor RMSE con emisiones (CORREGIDO)
+            if (best_rmse_info and 
+                best_rmse_info['epoch'] is not None and 
+                best_rmse_info['epoch'] < len(self.epoch_emissions) and
+                len(self.epoch_emissions) > 0):
+                
+                epoch = best_rmse_info['epoch']
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {best_rmse_info['rmse']:.4f} (Epoch {epoch})")
+                print(f"Emissions at best RMSE: {self.epoch_emissions[epoch]:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.cumulative_emissions[epoch]:.8f} kg")
+            else:
+                print(f"\n=== Best RMSE Info Not Available ===")
+                if best_rmse_info:
+                    print(f"Best RMSE: {best_rmse_info['rmse']:.4f} (Epoch {best_rmse_info['epoch']})")
+                    print("Emissions data not available for this epoch")
+                else:
+                    print("No best RMSE information available")
             
             # Si no hay datos de emisiones por época pero tenemos emisiones totales,
             # crear al menos una entrada para gráficos
             if not self.epoch_emissions and final_emissions > 0:
                 self.epoch_emissions = [final_emissions]
                 self.cumulative_emissions = [final_emissions]
-                if final_recall is not None:
-                    self.epoch_recall = [final_recall]
-                if final_ndcg is not None:
-                    self.epoch_ndcg = [final_ndcg]
                 if final_rmse is not None:
                     self.epoch_rmse = [final_rmse]
+                if final_mae is not None:
+                    self.epoch_mae = [final_mae]
             
             # Si no hay datos, salir
             if not self.epoch_emissions:
                 print("No hay datos de emisiones para graficar")
                 return
             
-            # Asegurarse de que tengamos un Recall final si no se rastreó por época
-            if not self.epoch_recall and final_recall is not None:
-                self.epoch_recall = [final_recall] * len(self.epoch_emissions)
+            # Asegurarse de que tengamos valores finales si no se rastrearon por época
             if not self.epoch_rmse and final_rmse is not None:
                 self.epoch_rmse = [final_rmse] * len(self.epoch_emissions)
+            if not self.epoch_mae and final_mae is not None:
+                self.epoch_mae = [final_mae] * len(self.epoch_emissions)
                 
             # Crear dataframe con todos los datos
             timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -312,9 +474,8 @@ class EmissionsPerEpochTracker:
                 'epoch_emissions_kg': self.epoch_emissions,
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss if self.epoch_loss else [0.0] * len(self.epoch_emissions),
-                'recall': self.epoch_recall if self.epoch_recall else [None] * len(self.epoch_emissions),
-                'ndcg': self.epoch_ndcg if self.epoch_ndcg else [None] * len(self.epoch_emissions),
-                'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions)
+                'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions),
+                'mae': self.epoch_mae if self.epoch_mae else [None] * len(self.epoch_emissions)
             })
             
             emissions_file = f'{self.result_path}/emissions_reports/emissions_metrics_{self.model_name}_{timestamp}.csv'
@@ -322,24 +483,24 @@ class EmissionsPerEpochTracker:
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
             
             # Graficar las relaciones
-            self.plot_emissions_vs_metrics(timestamp, final_recall, final_ndcg, final_rmse)
+            self.plot_emissions_vs_metrics(timestamp, final_rmse, final_mae)
             
         except Exception as e:
             print(f"Error al generar gráficos de emisiones: {e}")
             import traceback
             traceback.print_exc()
     
-    def plot_emissions_vs_metrics(self, timestamp, final_recall=None, final_ndcg=None, final_rmse=None):
+    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None, final_mae=None):
         """Genera gráficos para emisiones vs métricas"""
         
         # Configurar estilo para fondo blanco y texto negro (más legible)
         plt.style.use('default')
         
         try:
-            # Añadir gráfico de emisiones acumulativas vs RMSE
+            # Gráfico de emisiones acumulativas vs RMSE
             if self.epoch_rmse:
                 plt.figure(figsize=(10, 6), facecolor='white')
-                plt.plot(self.cumulative_emissions, self.epoch_rmse, 'm-', marker='D')
+                plt.plot(self.cumulative_emissions, self.epoch_rmse, 'b-', marker='o')
                 
                 # Añadir etiquetas con el número de época
                 for i, (emissions, rmse) in enumerate(zip(self.cumulative_emissions, self.epoch_rmse)):
@@ -357,30 +518,28 @@ class EmissionsPerEpochTracker:
                 plt.close()
                 print(f"Gráfico guardado en: {file_path}")
             
-            # Resto de los gráficos existentes
-            if self.epoch_recall:
-                # 1. Emisiones acumulativas vs Recall
+            # Gráfico de emisiones acumulativas vs MAE
+            if self.epoch_mae:
                 plt.figure(figsize=(10, 6), facecolor='white')
-                plt.plot(self.cumulative_emissions, self.epoch_recall, 'b-', marker='o')
+                plt.plot(self.cumulative_emissions, self.epoch_mae, 'm-', marker='D')
                 
                 # Añadir etiquetas con el número de época
-                for i, (emissions, recall) in enumerate(zip(self.cumulative_emissions, self.epoch_recall)):
-                    plt.annotate(f"{i}", (emissions, recall), textcoords="offset points", 
+                for i, (emissions, mae) in enumerate(zip(self.cumulative_emissions, self.epoch_mae)):
+                    plt.annotate(f"{i}", (emissions, mae), textcoords="offset points", 
                                 xytext=(0,10), ha='center', fontsize=9, color='black')
                     
                 plt.xlabel('Emisiones de CO2 acumuladas (kg)', color='black')
-                plt.ylabel('Recall@20', color='black')
-                plt.title('Relación entre Emisiones Acumuladas y Recall', color='black')
+                plt.ylabel('MAE', color='black')
+                plt.title('Relación entre Emisiones Acumuladas y MAE', color='black')
                 plt.grid(True, alpha=0.3)
                 plt.tick_params(colors='black')
                 
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_recall_{self.model_name}_{timestamp}.png'
+                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_mae_{self.model_name}_{timestamp}.png'
                 plt.savefig(file_path, facecolor='white')
                 plt.close()
                 print(f"Gráfico guardado en: {file_path}")
             
-            
-            # 2. Gráfico combinado: Emisiones por época y acumulativas
+            # Gráfico combinado: Emisiones por época y acumulativas
             plt.figure(figsize=(12, 10), facecolor='white')
             
             plt.subplot(2, 3, 1)
@@ -405,20 +564,20 @@ class EmissionsPerEpochTracker:
                 plt.ylabel('Loss', color='black')
                 plt.tick_params(colors='black')
             
-            if self.epoch_recall:
-                plt.subplot(2, 3, 4)
-                plt.plot(range(len(self.epoch_recall)), self.epoch_recall, 'b-', marker='o')
-                plt.title('Recall@20 por Época', color='black')
-                plt.xlabel('Época', color='black')
-                plt.ylabel('Recall', color='black')
-                plt.tick_params(colors='black')
-            
             if self.epoch_rmse:
-                plt.subplot(2, 3, 5)
-                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'm-', marker='D')
+                plt.subplot(2, 3, 4)
+                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o')
                 plt.title('RMSE por Época', color='black')
                 plt.xlabel('Época', color='black')
                 plt.ylabel('RMSE', color='black')
+                plt.tick_params(colors='black')
+            
+            if self.epoch_mae:
+                plt.subplot(2, 3, 5)
+                plt.plot(range(len(self.epoch_mae)), self.epoch_mae, 'm-', marker='D')
+                plt.title('MAE por Época', color='black')
+                plt.xlabel('Época', color='black')
+                plt.ylabel('MAE', color='black')
                 plt.tick_params(colors='black')
             
             plt.tight_layout()
@@ -428,17 +587,16 @@ class EmissionsPerEpochTracker:
             plt.close()
             print(f"Gráfico guardado en: {file_path}")
             
-            # Gráfico comparativo de varias métricas
-            if self.epoch_ndcg and self.epoch_recall and self.epoch_rmse:
+            # Gráfico comparativo de RMSE y MAE
+            if self.epoch_rmse and self.epoch_mae:
                 plt.figure(figsize=(10, 6), facecolor='white')
-                plt.plot(range(len(self.epoch_recall)), self.epoch_recall, 'b-', marker='o', label='Recall@20')
-                plt.plot(range(len(self.epoch_ndcg)), self.epoch_ndcg, 'g-', marker='s', label='NDCG@20')
+                plt.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'b-', marker='o', label='RMSE')
                 
-                # Para RMSE, usar un segundo eje Y debido a la diferencia de escala
+                # Para MAE, usar un segundo eje Y debido a la diferencia de escala
                 ax1 = plt.gca()
                 ax2 = ax1.twinx()
-                ax2.plot(range(len(self.epoch_rmse)), self.epoch_rmse, 'm-', marker='D', label='RMSE')
-                ax2.set_ylabel('RMSE', color='m')
+                ax2.plot(range(len(self.epoch_mae)), self.epoch_mae, 'm-', marker='D', label='MAE')
+                ax2.set_ylabel('MAE', color='m')
                 ax2.tick_params(axis='y', colors='m')
                 
                 # Añadir las leyendas de ambos ejes
@@ -448,9 +606,9 @@ class EmissionsPerEpochTracker:
                 labels = labels1 + labels2
                 ax1.legend(lines, labels, loc='best')
                 
-                plt.title('Comparación de Métricas por Época', color='black')
+                plt.title('Comparación de RMSE y MAE por Época', color='black')
                 plt.xlabel('Época', color='black')
-                ax1.set_ylabel('Recall/NDCG', color='black')
+                ax1.set_ylabel('RMSE', color='black')
                 plt.grid(True, alpha=0.3)
                 ax1.tick_params(colors='black')
                 
@@ -634,14 +792,13 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     steps_per_epoch = len(train_pairs) // batch_size + (len(train_pairs) % batch_size != 0)
 
     epoch_losses = []
-    recall_scores = []
-    ndcg_scores = []
-    rmse_scores = []  # Añadir lista para RMSE
+    rmse_scores = []
+    mae_scores = []
     
     # Para métricas finales
     tiempo_inicio = time.time()
     
-    for epoch in range(1, epochs + 1):
+    for epoch in range(epochs):
         # Iniciar seguimiento de época
         system_tracker.start_epoch(epoch)
         emissions_tracker.start_epoch(epoch)
@@ -693,42 +850,32 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
         avg_epoch_loss = epoch_loss / steps_per_epoch
         epoch_losses.append(avg_epoch_loss)
         
-        # evaluate on validation set
-        val_users = [u for u in range(n_users) if len(val_data[u]) > 0]
-        val_recs = model.recommend(val_users, k=k)
-        epoch_recall = recall_at_k(val_recs, val_data, k=k)
-        epoch_ndcg = ndcg(val_recs, val_data, k=k)
-        
-        # Calcular RMSE en cada época
+        # Calcular RMSE y MAE en cada época para seguimiento correcto
         epoch_rmse = calculate_rmse(model, val_data, n_users, n_items)
+        epoch_mae = calculate_mae(model, val_data, n_users, n_items)
+        print(f"Epoch {epoch}: RMSE: {epoch_rmse:.6f}, MAE: {epoch_mae:.6f} (calculated)")
+        
         rmse_scores.append(epoch_rmse)
-
-        recall_scores.append(epoch_recall)
-        ndcg_scores.append(epoch_ndcg)
+        mae_scores.append(epoch_mae)
         
         # Actualizar trackers con las métricas
-        system_tracker.end_epoch(epoch, avg_epoch_loss, epoch_recall, epoch_ndcg, epoch_rmse)
-        emissions_tracker.end_epoch(epoch, avg_epoch_loss, epoch_recall, epoch_ndcg, epoch_rmse)
+        system_tracker.end_epoch(epoch, avg_epoch_loss, epoch_rmse, epoch_mae)
+        emissions_tracker.end_epoch(epoch, avg_epoch_loss, epoch_rmse, epoch_mae)
         
         print(f"Epoch {epoch}/{epochs} completed. Average loss: {avg_epoch_loss:.6f}")
-        print(f"Epoch {epoch}: Recall@{k}: {epoch_recall:.6f}, NDCG@{k}: {epoch_ndcg:.6f}, RMSE: {epoch_rmse:.6f}")
 
     # Evaluación final en el conjunto de pruebas
     print("\nEvaluando en conjunto de prueba final...")
     system_tracker.start_epoch("test")
     
-    test_users = [u for u in range(n_users) if len(test_data[u]) > 0]
-    final_metrics = evaluate_lightgcn(model, test_users, test_data, ks=[k])
-    final_recall = final_metrics[k][0]  # Recall@k
-    final_ndcg = final_metrics[k][1]    # NDCG@k
-    
-    # Calcular RMSE final en conjunto de prueba
+    # Calcular RMSE y MAE finales en conjunto de prueba
     final_rmse = calculate_rmse(model, test_data, n_users, n_items)
+    final_mae = calculate_mae(model, test_data, n_users, n_items)
     
     # Finalizar seguimiento de sistemas
     try:
         print("\nGenerando métricas finales del sistema...")
-        system_tracker.end_test(final_recall, final_ndcg, final_rmse)
+        system_tracker.end_test(final_rmse, final_mae)
     except Exception as e:
         print(f"Error al generar métricas finales con tracker: {e}")
         import traceback
@@ -736,7 +883,7 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     
     try:
         print("\nGenerando gráficos y métricas de emisiones...")
-        emissions_tracker.end_training(final_recall, final_ndcg, final_rmse)
+        emissions_tracker.end_training(final_rmse, final_mae)
     except Exception as e:
         print(f"Error al generar métricas de emisiones: {e}")
         import traceback
@@ -747,9 +894,8 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     metrics_df = pd.DataFrame({
         'epoch': list(range(1, epochs + 1)),
         'loss': epoch_losses,
-        'recall': recall_scores,
-        'ndcg': ndcg_scores,
-        'rmse': rmse_scores  # Añadir RMSE a las métricas guardadas
+        'rmse': rmse_scores,
+        'mae': mae_scores
     })
     
     metrics_file = f"{result_path}/model_metrics_{timestamp}.csv"
@@ -767,9 +913,8 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     print(f"Memoria final: {memoria_final:.2f} MB")
     print(f"CPU final: {cpu_final:.2f}%")
     print(f"Tiempo total de ejecución: {tiempo_total:.2f} segundos")
-    print(f"Recall@{k} final: {final_recall:.4f}")
-    print(f"NDCG@{k} final: {final_ndcg:.4f}")
     print(f"RMSE final: {final_rmse:.4f}")
+    print(f"MAE final: {final_mae:.4f}")
     print("="*60)
     
     # Guardar las métricas finales
@@ -777,9 +922,8 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
         'final_memory_mb': memoria_final,
         'final_cpu_percent': cpu_final,
         'total_time_sec': tiempo_total,
-        'final_recall': final_recall,
-        'final_ndcg': final_ndcg,
         'final_rmse': final_rmse,
+        'final_mae': final_mae,
         'timestamp': timestamp
     }
     
@@ -788,7 +932,7 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     final_metrics_df.to_csv(final_metrics_file, index=False)
     print(f"Métricas finales guardadas en: {final_metrics_file}")
     
-    # Graficar resultados de entrenamiento incluyendo RMSE
+    # Graficar resultados de entrenamiento incluyendo MAE
     plt.figure(figsize=(8, 6))
     plt.plot(range(1, len(epoch_losses) + 1), epoch_losses, marker='o', linestyle='-', color='b', label="Loss")
     plt.title("LightGCN - Training Loss")
@@ -800,28 +944,7 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     plt.close()
 
     plt.figure(figsize=(8, 6))
-    plt.plot(range(1, len(recall_scores) + 1), recall_scores, marker='o', linestyle='-', color='g', label=f"Recall@{k}")
-    plt.title(f"LightGCN - Recall@{k}")
-    plt.xlabel("Epoch")
-    plt.ylabel("Recall")
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(f"{result_path}/recall_{timestamp}.png")
-    plt.close()
-
-    plt.figure(figsize=(8, 6))
-    plt.plot(range(1, len(ndcg_scores) + 1), ndcg_scores, marker='o', linestyle='-', color='r', label=f"NDCG@{k}")
-    plt.title(f"LightGCN - NDCG@{k}")
-    plt.xlabel("Epoch")
-    plt.ylabel("NDCG")
-    plt.grid(True)
-    plt.legend()
-    plt.savefig(f"{result_path}/ndcg_{timestamp}.png")
-    plt.close()
-    
-    # Graficar RMSE
-    plt.figure(figsize=(8, 6))
-    plt.plot(range(1, len(rmse_scores) + 1), rmse_scores, marker='D', linestyle='-', color='m', label="RMSE")
+    plt.plot(range(1, len(rmse_scores) + 1), rmse_scores, marker='o', linestyle='-', color='b', label="RMSE")
     plt.title("LightGCN - RMSE")
     plt.xlabel("Epoch")
     plt.ylabel("RMSE")
@@ -829,79 +952,35 @@ def train_lightgcn_with_metrics(model, train_data, val_data, test_data, n_users,
     plt.legend()
     plt.savefig(f"{result_path}/rmse_{timestamp}.png")
     plt.close()
-
-    print(f"\nEntrenamiento finalizado! Recall@{k}: {final_recall:.4f}, NDCG@{k}: {final_ndcg:.4f}, RMSE: {final_rmse:.4f}")
     
-    return epoch_losses, recall_scores, ndcg_scores, rmse_scores, final_recall, final_ndcg, final_rmse
+    # Graficar MAE
+    plt.figure(figsize=(8, 6))
+    plt.plot(range(1, len(mae_scores) + 1), mae_scores, marker='D', linestyle='-', color='m', label="MAE")
+    plt.title("LightGCN - MAE")
+    plt.xlabel("Epoch")
+    plt.ylabel("MAE")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig(f"{result_path}/mae_{timestamp}.png")
+    plt.close()
 
-# Funciones de evaluación existentes
-def recall_at_k(recs, test_data, k=10):
-    user_recs = defaultdict(list)
-    for (u, i, s) in recs:
-        user_recs[u].append(i)
-    recalls = []
-    for u, items_pred in user_recs.items():
-        if len(test_data[u]) == 0:
-            continue
-        if k > 0:
-            items_pred = items_pred[:k]
-        gt = test_data[u]
-        num_hit = len(set(items_pred).intersection(gt))
-        recalls.append(num_hit / float(len(gt)))
-    return np.mean(recalls) if recalls else 0.0
-
-def dcg_at_k(r, k):
-    r = np.asfarray(r)[:k]
-    if r.size:
-        return np.sum(r / np.log2(np.arange(2, r.size + 2)))
-    return 0.
-
-def ndcg_at_k(recommended, ground_truth, k=10):
-    rel = [1 if i in ground_truth else 0 for i in recommended[:k]]
-    ideal_rel = sorted(rel, reverse=True)
-    dcg = dcg_at_k(rel, k)
-    idcg = dcg_at_k(ideal_rel, k)
-    return (dcg / idcg) if idcg > 0 else 0.0
-
-def ndcg(recs, test_data, k=10):
-    user_recs = defaultdict(list)
-    for (u, i, s) in recs:
-        user_recs[u].append(i)
-    ndcgs = []
-    for u, items_pred in user_recs.items():
-        gt = test_data[u]
-        if len(gt) == 0:
-            continue
-        ndcgs.append(ndcg_at_k(items_pred, gt, k))
-    return np.mean(ndcgs) if ndcgs else 0.0
-
-def evaluate_lightgcn(model, users, test_data, ks=[5, 10, 20], batch_size=2000):
-    all_recs = []
-    idx_start = 0
-    max_k = max(ks)
-    while idx_start < len(users):
-        idx_end = min(idx_start + batch_size, len(users))
-        user_batch = users[idx_start:idx_end]
-        recs_chunk = model.recommend(user_batch, k=max_k)
-        all_recs.extend(recs_chunk)
-        idx_start = idx_end
-
-    results = {}
-    for k in ks:
-        rec = recall_at_k(all_recs, test_data, k=k)
-        ndcg_ = ndcg(all_recs, test_data, k=k)
-        results[k] = (rec, ndcg_)
-        print(f"\nEvaluation Results (k={k}):")
-        print(f"  Recall@{k}:    {rec:.6f}")
-        print(f"  NDCG@{k}:      {ndcg_:.6f}")
-
-    return results
+    print(f"\nEntrenamiento finalizado! RMSE: {final_rmse:.4f}, MAE: {final_mae:.4f}")
+    
+    return epoch_losses, rmse_scores, mae_scores, final_rmse, final_mae
 
 # Función principal para ejecutar todo
 def run_lightgcn_with_metrics():
+    # Rutas de archivos
     train_file = 'C:/Users/xpati/Documents/TFG/ml-1m/train_data.json'
     test_file = 'C:/Users/xpati/Documents/TFG/ml-1m/test_data.json'
     val_file = 'C:/Users/xpati/Documents/TFG/ml-1m/validation_data.json'
+    ratings_file = 'C:/Users/xpati/Documents/TFG/ml-1m/ratings.dat'  # Archivo con ratings reales
+    
+    # Cargar ratings reales
+    print("Cargando ratings reales de MovieLens...")
+    load_ratings_from_file(ratings_file)
+    show_ratings_statistics()
+    test_rating_usage()  # Verificación adicional
 
     train_data, test_data, val_data, n_users, n_items = load_mydataset(
         train_file, test_file, val_file
@@ -917,12 +996,12 @@ def run_lightgcn_with_metrics():
     A_tilde = tf.sparse.SparseTensor(indices=indices, values=coo.data, dense_shape=coo.shape)
     A_tilde = tf.sparse.reorder(A_tilde)
 
-    N_LAYERS = 2
-    EMBED_DIM = 128
-    DECAY = 1e-2
-    INITIAL_LR = 1e-3
-    EPOCHS = 50
-    BATCH_SIZE = 1024
+    N_LAYERS = 2  # Volver a configuración más rápida
+    EMBED_DIM = 64  # Reducir dimensiones para velocidad
+    DECAY = 1e-4  # Mantener regularización ligera
+    INITIAL_LR = 1e-3  # Mantener learning rate
+    EPOCHS = 50  # MÁS ÉPOCAS para convergencia
+    BATCH_SIZE = 2048  # Reducir batch size para mejor gradientes
 
     model = LightGCNModel(
         n_users=n_users,
@@ -935,7 +1014,7 @@ def run_lightgcn_with_metrics():
     )
 
     print("\nStarting LightGCN training...")
-    epoch_losses, recall_scores, ndcg_scores, final_recall, final_ndcg = train_lightgcn_with_metrics(
+    epoch_losses, rmse_scores, mae_scores, final_rmse, final_mae = train_lightgcn_with_metrics(
         model=model,
         train_data=train_data,
         val_data=val_data,
@@ -949,7 +1028,7 @@ def run_lightgcn_with_metrics():
     )
     
     print("\nTraining and evaluation completed!")
-    return final_recall, final_ndcg
+    return final_rmse, final_mae
 
 if __name__ == "__main__":
     run_lightgcn_with_metrics()

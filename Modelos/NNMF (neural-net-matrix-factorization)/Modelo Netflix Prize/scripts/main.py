@@ -27,6 +27,9 @@ class SystemMetricsTracker:
         self.train_metrics = []
         self.test_metrics = {}
         self.start_time = time.time()
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_metrics = None
         
     def start_epoch(self, epoch):
         self.epoch_start_time = time.time()
@@ -36,13 +39,22 @@ class SystemMetricsTracker:
             'cpu_usage_percent': psutil.cpu_percent(),
         }
         
-    def end_epoch(self, epoch, train_rmse, valid_rmse=None):
+    def end_epoch(self, epoch, train_rmse, train_mae, valid_rmse=None, valid_mae=None):
         epoch_time = time.time() - self.epoch_start_time
         self.current_epoch_metrics['epoch_time_sec'] = epoch_time
         self.current_epoch_metrics['train_rmse'] = train_rmse
+        self.current_epoch_metrics['train_mae'] = train_mae
         if valid_rmse is not None:
             self.current_epoch_metrics['valid_rmse'] = valid_rmse
+        if valid_mae is not None:
+            self.current_epoch_metrics['valid_mae'] = valid_mae
         self.train_metrics.append(self.current_epoch_metrics)
+        
+        # Rastrear el mejor RMSE
+        if valid_rmse is not None and valid_rmse < self.best_rmse:
+            self.best_rmse = valid_rmse
+            self.best_rmse_epoch = epoch
+            self.best_rmse_metrics = self.current_epoch_metrics.copy()
         
         # Imprimir resumen de época
         print(f"\nEpoch {epoch} Metrics:")
@@ -50,31 +62,47 @@ class SystemMetricsTracker:
         print(f"  Memory: {self.current_epoch_metrics['memory_usage_mb']:.2f}MB")
         print(f"  CPU: {self.current_epoch_metrics['cpu_usage_percent']:.1f}%")
         print(f"  Train RMSE: {train_rmse:.4f}")
+        print(f"  Train MAE: {train_mae:.4f}")
         if valid_rmse is not None:
             print(f"  Valid RMSE: {valid_rmse:.4f}")
+        if valid_mae is not None:
+            print(f"  Valid MAE: {valid_mae:.4f}")
         
-    def end_test(self, test_rmse):
+    def end_test(self, test_rmse, test_mae):
         self.test_metrics = {
             'test_time_sec': time.time() - self.epoch_start_time,
             'total_time_sec': time.time() - self.start_time,
             'final_memory_usage_mb': psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2,
             'final_cpu_usage_percent': psutil.cpu_percent(),
             'test_rmse': test_rmse,
+            'test_mae': test_mae,
         }
         
         # Imprimir métricas finales
         print("\n=== Final Training Metrics ===")
         for m in self.train_metrics:
-            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, Train RMSE={m['train_rmse']:.4f}"
-            if 'valid_rmse' in m:
-                metrics_str += f", Valid RMSE={m['valid_rmse']:.4f}"
+            metrics_str = f"Epoch {m['epoch']}: Time={m['epoch_time_sec']:.2f}s, Memory={m['memory_usage_mb']:.2f}MB, CPU={m['cpu_usage_percent']:.1f}%, RMSE={m['train_rmse']:.4f}, MAE={m['train_mae']:.4f}"
+            if 'valid_rmse' in m and 'valid_mae' in m:
+                metrics_str += f" (Val RMSE={m['valid_rmse']:.4f}, Val MAE={m['valid_mae']:.4f})"
             print(metrics_str)
         
         print("\n=== Final Test Metrics ===")
         print(f"Total Time: {self.test_metrics['total_time_sec']:.2f}s (Test: {self.test_metrics['test_time_sec']:.2f}s)")
         print(f"Final Memory: {self.test_metrics['final_memory_usage_mb']:.2f}MB")
         print(f"Final CPU: {self.test_metrics['final_cpu_usage_percent']:.1f}%")
-        print(f"Test RMSE: {test_rmse:.4f}")
+        print(f"RMSE: {test_rmse:.4f}")
+        print(f"MAE: {test_mae:.4f}")
+        
+        # Mostrar información del mejor RMSE durante el entrenamiento
+        if self.best_rmse_epoch is not None:
+            print(f"\n=== Best Training RMSE ===")
+            print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+            if self.best_rmse_metrics:
+                print(f"Time: {self.best_rmse_metrics['epoch_time_sec']:.2f}s")
+                print(f"Memory: {self.best_rmse_metrics['memory_usage_mb']:.2f}MB")
+                print(f"CPU: {self.best_rmse_metrics['cpu_usage_percent']:.1f}%")
+                if 'train_mae' in self.best_rmse_metrics and self.best_rmse_metrics['train_mae'] is not None:
+                    print(f"MAE: {self.best_rmse_metrics['valid_mae']:.4f}")
         
         # Guardar métricas en CSV
         timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -96,9 +124,15 @@ class EmissionsPerEpochTracker:
         self.epoch_emissions = []
         self.cumulative_emissions = []
         self.epoch_train_rmse = []
+        self.epoch_train_mae = []
         self.epoch_valid_rmse = []
+        self.epoch_valid_mae = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
         
         # Crear directorios para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
@@ -141,7 +175,7 @@ class EmissionsPerEpochTracker:
             print(f"Warning: Could not start tracker for epoch {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, train_rmse, valid_rmse=None):
+    def end_epoch(self, epoch, train_rmse, valid_rmse=None, train_mae=None, valid_mae=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -158,15 +192,28 @@ class EmissionsPerEpochTracker:
             self.epoch_emissions.append(epoch_co2)
             self.cumulative_emissions.append(self.total_emissions)
             self.epoch_train_rmse.append(train_rmse)
+            if train_mae is not None:
+                self.epoch_train_mae.append(train_mae)
             if valid_rmse is not None:
                 self.epoch_valid_rmse.append(valid_rmse)
+            if valid_mae is not None:
+                self.epoch_valid_mae.append(valid_mae)
+            
+            # Verificar si este es el mejor RMSE de validación
+            if valid_rmse is not None and valid_rmse < self.best_rmse:
+                self.best_rmse = valid_rmse
+                self.best_rmse_epoch = epoch
+                self.best_rmse_emissions = epoch_co2
+                self.best_rmse_cumulative_emissions = self.total_emissions
             
             print(f"Epoch {epoch} - Emissions: {epoch_co2:.8f} kg, Cumulative: {self.total_emissions:.8f} kg")
             print(f"Train RMSE: {train_rmse:.4f}, Valid RMSE: {valid_rmse:.4f}")
+            if train_mae is not None:
+                print(f"Train MAE: {train_mae:.4f}, Valid MAE: {valid_mae:.4f}")
         except Exception as e:
             print(f"Error measuring emissions in epoch {epoch}: {e}")
     
-    def end_training(self, final_rmse):
+    def end_training(self, final_rmse, final_mae=None):
         try:
             # Detener el tracker principal
             final_emissions = 0.0
@@ -188,6 +235,11 @@ class EmissionsPerEpochTracker:
                     except:
                         pass
             
+            # Imprimir resumen del mejor modelo
+            if hasattr(self, 'best_rmse_epoch') and self.best_rmse_epoch is not None:
+                print(f"\nBest model (RMSE): Epoch {self.best_rmse_epoch} with RMSE {self.best_rmse:.6f}")
+                print(f"Best model emissions: {self.best_rmse_emissions:.8f} kg (epoch), {self.best_rmse_cumulative_emissions:.8f} kg (cumulative)")
+            
             # Si no hay datos de emisiones por época pero tenemos emisiones totales,
             # crear al menos una entrada para gráficos
             if not self.epoch_emissions and final_emissions > 0:
@@ -195,6 +247,8 @@ class EmissionsPerEpochTracker:
                 self.cumulative_emissions = [final_emissions]
                 if final_rmse is not None:
                     self.epoch_valid_rmse = [final_rmse]
+                if final_mae is not None:
+                    self.epoch_valid_mae = [final_mae]
             
             # Si no hay datos, salir
             if not self.epoch_emissions:
@@ -220,98 +274,139 @@ class EmissionsPerEpochTracker:
             print(f"Emission metrics saved to: {emissions_file}")
             
             # Graficar las relaciones
-            self.plot_emissions_vs_metrics(timestamp, final_rmse)
+            self.plot_emissions_vs_metrics(timestamp, final_rmse, final_mae)
             
         except Exception as e:
             print(f"Error generating emission graphs: {e}")
             import traceback
             traceback.print_exc()
     
-    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None):
-        """Generate plots for emissions vs metrics"""
+    def plot_emissions_vs_metrics(self, timestamp, final_rmse=None, final_mae=None):
+        """Generate comprehensive plots for emissions vs metrics in 2x3 subplot layout"""
         
         try:
+            # Crear figura con subplots 2x3
+            fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+            fig.suptitle(f'Emissions and Performance Analysis - {self.model_name}', fontsize=16, fontweight='bold')
+            
+            # 1. Emissions per epoch
+            axes[0, 0].plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x', linewidth=2)
+            axes[0, 0].set_title('CO2 Emissions per Epoch', fontweight='bold')
+            axes[0, 0].set_xlabel('Epoch')
+            axes[0, 0].set_ylabel('CO2 Emissions (kg)')
+            axes[0, 0].grid(True, alpha=0.3)
+            
+            # 2. Cumulative emissions
+            axes[0, 1].plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o', linewidth=2)
+            axes[0, 1].set_title('Cumulative CO2 Emissions', fontweight='bold')
+            axes[0, 1].set_xlabel('Epoch')
+            axes[0, 1].set_ylabel('CO2 Emissions (kg)')
+            axes[0, 1].grid(True, alpha=0.3)
+            
+            # 3. RMSE evolution
+            if self.epoch_train_rmse:
+                axes[0, 2].plot(range(len(self.epoch_train_rmse)), self.epoch_train_rmse, 'g-', marker='o', label='Train RMSE', linewidth=2)
             if self.epoch_valid_rmse:
-                # 1. Cumulative emissions vs RMSE
-                plt.figure(figsize=(10, 6))
-                plt.plot(self.cumulative_emissions, self.epoch_valid_rmse, 'b-', marker='o')
+                axes[0, 2].plot(range(len(self.epoch_valid_rmse)), self.epoch_valid_rmse, 'b-', marker='s', label='Valid RMSE', linewidth=2)
+                # Marcar el mejor RMSE
+                if hasattr(self, 'best_rmse_epoch') and self.best_rmse_epoch is not None:
+                    axes[0, 2].axvline(x=self.best_rmse_epoch, color='red', linestyle='--', alpha=0.7, label=f'Best RMSE (Epoch {self.best_rmse_epoch})')
+            axes[0, 2].set_title('RMSE Evolution', fontweight='bold')
+            axes[0, 2].set_xlabel('Epoch')
+            axes[0, 2].set_ylabel('RMSE')
+            axes[0, 2].legend()
+            axes[0, 2].grid(True, alpha=0.3)
+            
+            # 4. MAE evolution (si disponible)
+            if self.epoch_train_mae or self.epoch_valid_mae:
+                if self.epoch_train_mae:
+                    axes[1, 0].plot(range(len(self.epoch_train_mae)), self.epoch_train_mae, 'g-', marker='o', label='Train MAE', linewidth=2)
+                if self.epoch_valid_mae:
+                    axes[1, 0].plot(range(len(self.epoch_valid_mae)), self.epoch_valid_mae, 'b-', marker='s', label='Valid MAE', linewidth=2)
+                axes[1, 0].set_title('MAE Evolution', fontweight='bold')
+                axes[1, 0].set_xlabel('Epoch')
+                axes[1, 0].set_ylabel('MAE')
+                axes[1, 0].legend()
+                axes[1, 0].grid(True, alpha=0.3)
+            else:
+                # Si no hay MAE, mostrar train RMSE por separado
+                if self.epoch_train_rmse:
+                    axes[1, 0].plot(range(len(self.epoch_train_rmse)), self.epoch_train_rmse, 'g-', marker='o', linewidth=2)
+                axes[1, 0].set_title('Train RMSE Evolution', fontweight='bold')
+                axes[1, 0].set_xlabel('Epoch')
+                axes[1, 0].set_ylabel('Train RMSE')
+                axes[1, 0].grid(True, alpha=0.3)
+            
+            # 5. Cumulative emissions vs RMSE
+            if self.epoch_valid_rmse:
+                sizes = [(i+1)*30 for i in range(len(self.cumulative_emissions))]
+                scatter = axes[1, 1].scatter(self.cumulative_emissions, self.epoch_valid_rmse, 
+                                          color='blue', marker='o', s=sizes, alpha=0.7, edgecolors='black')
                 
-                # Add epoch labels
+                # Añadir etiquetas de época
                 for i, (emissions, rmse) in enumerate(zip(self.cumulative_emissions, self.epoch_valid_rmse)):
-                    plt.annotate(f"{i}", (emissions, rmse), textcoords="offset points", 
-                                xytext=(0,10), ha='center', fontsize=9)
+                    axes[1, 1].annotate(f"{i}", (emissions, rmse), textcoords="offset points", 
+                                      xytext=(0,10), ha='center', fontsize=9, fontweight='bold')
                     
-                plt.xlabel('Cumulative CO2 Emissions (kg)')
-                plt.ylabel('Validation RMSE')
-                plt.title('Relationship between Cumulative Emissions and RMSE')
-                plt.grid(True, alpha=0.3)
+                # Marcar el mejor modelo
+                if hasattr(self, 'best_rmse_epoch') and self.best_rmse_epoch is not None:
+                    best_emissions = self.best_rmse_cumulative_emissions
+                    best_rmse = self.best_rmse
+                    axes[1, 1].scatter([best_emissions], [best_rmse], color='red', marker='*', s=200, 
+                                     label=f'Best Model (Epoch {self.best_rmse_epoch})', edgecolors='black', linewidth=2)
+                    axes[1, 1].legend()
                 
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_vs_rmse_{self.model_name}_{timestamp}.png'
-                plt.savefig(file_path)
-                plt.close()
-                print(f"Graph saved to: {file_path}")
+                axes[1, 1].set_xlabel('Cumulative CO2 Emissions (kg)')
+                axes[1, 1].set_ylabel('Validation RMSE')
+                axes[1, 1].set_title('Performance vs Environmental Impact', fontweight='bold')
+                axes[1, 1].grid(True, alpha=0.3)
             
-            # 2. Combined graph: Emissions per epoch and cumulative
-            plt.figure(figsize=(12, 10))
-            
-            plt.subplot(2, 2, 1)
-            plt.plot(range(len(self.epoch_emissions)), self.epoch_emissions, 'r-', marker='x')
-            plt.title('Emissions per Epoch')
-            plt.xlabel('Epoch')
-            plt.ylabel('CO2 Emissions (kg)')
-            
-            plt.subplot(2, 2, 2)
-            plt.plot(range(len(self.cumulative_emissions)), self.cumulative_emissions, 'r-', marker='o')
-            plt.title('Cumulative Emissions per Epoch')
-            plt.xlabel('Epoch')
-            plt.ylabel('CO2 Emissions (kg)')
-            
-            plt.subplot(2, 2, 3)
-            plt.plot(range(len(self.epoch_train_rmse)), self.epoch_train_rmse, 'g-', marker='o')
-            plt.title('Train RMSE per Epoch')
-            plt.xlabel('Epoch')
-            plt.ylabel('Train RMSE')
-            
-            if self.epoch_valid_rmse:
-                plt.subplot(2, 2, 4)
-                plt.plot(range(len(self.epoch_valid_rmse)), self.epoch_valid_rmse, 'b-', marker='o')
-                plt.title('Validation RMSE per Epoch')
-                plt.xlabel('Epoch')
-                plt.ylabel('Validation RMSE')
+            # 6. Emissions efficiency (RMSE improvement per kg CO2)
+            if len(self.epoch_valid_rmse) > 1 and len(self.cumulative_emissions) > 1:
+                rmse_improvements = []
+                emission_costs = []
+                
+                for i in range(1, len(self.epoch_valid_rmse)):
+                    rmse_improvement = self.epoch_valid_rmse[0] - self.epoch_valid_rmse[i]
+                    emission_cost = self.cumulative_emissions[i]
+                    if emission_cost > 0:
+                        efficiency = rmse_improvement / emission_cost
+                        rmse_improvements.append(rmse_improvement)
+                        emission_costs.append(efficiency)
+                
+                if emission_costs:
+                    epochs_range = range(1, len(emission_costs) + 1)
+                    axes[1, 2].plot(epochs_range, emission_costs, 'purple', marker='o', linewidth=2)
+                    axes[1, 2].set_title('Emissions Efficiency\n(RMSE Improvement per kg CO2)', fontweight='bold')
+                    axes[1, 2].set_xlabel('Epoch')
+                    axes[1, 2].set_ylabel('RMSE Improvement / kg CO2')
+                    axes[1, 2].grid(True, alpha=0.3)
+                    
+                    # Marcar la época más eficiente
+                    if emission_costs:
+                        max_efficiency_epoch = epochs_range[emission_costs.index(max(emission_costs))]
+                        axes[1, 2].axvline(x=max_efficiency_epoch, color='green', linestyle='--', alpha=0.7,
+                                         label=f'Most Efficient (Epoch {max_efficiency_epoch})')
+                        axes[1, 2].legend()
+            else:
+                # Si no hay suficientes datos, mostrar un gráfico de validación RMSE simple
+                if self.epoch_valid_rmse:
+                    axes[1, 2].plot(range(len(self.epoch_valid_rmse)), self.epoch_valid_rmse, 'b-', marker='s', linewidth=2)
+                axes[1, 2].set_title('Validation RMSE Evolution', fontweight='bold')
+                axes[1, 2].set_xlabel('Epoch')
+                axes[1, 2].set_ylabel('Validation RMSE')
+                axes[1, 2].grid(True, alpha=0.3)
             
             plt.tight_layout()
             
-            file_path = f'{self.result_path}/emissions_plots/metrics_by_epoch_{self.model_name}_{timestamp}.png'
-            plt.savefig(file_path)
+            # Guardar la figura completa
+            file_path = f'{self.result_path}/emissions_plots/comprehensive_analysis_{self.model_name}_{timestamp}.png'
+            plt.savefig(file_path, dpi=300, bbox_inches='tight')
             plt.close()
-            print(f"Graph saved to: {file_path}")
+            print(f"Comprehensive analysis plot saved to: {file_path}")
             
-            if self.epoch_valid_rmse:
-                # 3. Scatter plot of performance vs cumulative emissions
-                plt.figure(figsize=(10, 6))
-                
-                # Adjust point sizes by epoch
-                sizes = [(i+1)*20 for i in range(len(self.cumulative_emissions))]
-                
-                scatter = plt.scatter(self.epoch_valid_rmse, self.cumulative_emissions, 
-                            color='blue', marker='o', s=sizes, alpha=0.7)
-                
-                # Add epoch labels
-                for i, (rmse, em) in enumerate(zip(self.epoch_valid_rmse, self.cumulative_emissions)):
-                    plt.annotate(f"{i}", (rmse, em), textcoords="offset points", 
-                                xytext=(0,5), ha='center', fontsize=9)
-                
-                plt.ylabel('Cumulative CO2 Emissions (kg)')
-                plt.xlabel('Validation RMSE')
-                plt.title('Relationship between RMSE and Cumulative Emissions')
-                plt.grid(True, alpha=0.3)
-                
-                file_path = f'{self.result_path}/emissions_plots/cumulative_emissions_performance_scatter_{self.model_name}_{timestamp}.png'
-                plt.savefig(file_path)
-                plt.close()
-                print(f"Graph saved to: {file_path}")
         except Exception as e:
-            print(f"Error generating plots: {e}")
+            print(f"Error generating comprehensive plots: {e}")
             import traceback
             traceback.print_exc()
 
@@ -337,11 +432,16 @@ def train(model, train_data, valid_data, batch_size, max_epochs, use_early_stop,
     # Lists to store metrics
     train_rmse_list = []
     valid_rmse_list = []
+    train_mae_list = []
+    valid_mae_list = []
     
     # Initial evaluation
     train_rmse = model.eval_rmse(train_data)
     valid_rmse = model.eval_rmse(valid_data)
+    train_mae = model.eval_mae(train_data)
+    valid_mae = model.eval_mae(valid_data)
     print(f"[start] Train RMSE: {train_rmse:.3f}; Valid RMSE: {valid_rmse:.3f}")
+    print(f"[start] Train MAE: {train_mae:.3f}; Valid MAE: {valid_mae:.3f}")
 
     prev_valid_rmse = float("inf")
     early_stop_epochs = 0
@@ -373,17 +473,22 @@ def train(model, train_data, valid_data, batch_size, max_epochs, use_early_stop,
         # Calculate epoch metrics
         train_rmse = model.eval_rmse(train_data)
         valid_rmse = model.eval_rmse(valid_data)
+        train_mae = model.eval_mae(train_data)
+        valid_mae = model.eval_mae(valid_data)
         
         # Store metrics
         train_rmse_list.append(train_rmse)
         valid_rmse_list.append(valid_rmse)
+        train_mae_list.append(train_mae)
+        valid_mae_list.append(valid_mae)
         
         # End tracking for this epoch
-        system_tracker.end_epoch(epoch, train_rmse, valid_rmse)
-        emissions_tracker.end_epoch(epoch, train_rmse, valid_rmse)
+        system_tracker.end_epoch(epoch, train_rmse, valid_rmse, train_mae, valid_mae)
+        emissions_tracker.end_epoch(epoch, train_rmse, valid_rmse, train_mae, valid_mae)
         
         # Print epoch results
         print(f"[{epoch}] Train RMSE: {train_rmse:.3f}; Valid RMSE: {valid_rmse:.3f}")
+        print(f"[{epoch}] Train MAE: {train_mae:.3f}; Valid MAE: {valid_mae:.3f}")
 
         # Early stopping check
         if use_early_stop:
@@ -407,14 +512,17 @@ def train(model, train_data, valid_data, batch_size, max_epochs, use_early_stop,
     # Final evaluation
     system_tracker.start_epoch("test")
     test_rmse = model.eval_rmse(test_data)
-    system_tracker.end_test(test_rmse)
+    test_mae = model.eval_mae(test_data)
+    system_tracker.end_test(test_rmse, test_mae)
     
     # Save training history
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     history_df = pd.DataFrame({
         'epoch': range(len(train_rmse_list)),
         'train_rmse': train_rmse_list,
-        'valid_rmse': valid_rmse_list
+        'valid_rmse': valid_rmse_list,
+        'train_mae': train_mae_list,
+        'valid_mae': valid_mae_list
     })
     
     os.makedirs(result_path, exist_ok=True)
@@ -423,26 +531,28 @@ def train(model, train_data, valid_data, batch_size, max_epochs, use_early_stop,
     print(f"Training history saved to {history_file}")
     
     # End emissions tracking
-    emissions_tracker.end_training(test_rmse)
+    emissions_tracker.end_training(test_rmse, test_mae)
     
     return test_rmse, best_model_path
 
 
 def test(model, test_data):
     test_rmse = model.eval_rmse(test_data)
+    test_mae = model.eval_mae(test_data)
     print(f"Final test RMSE: {test_rmse:.3f}")
-    return test_rmse
+    print(f"Final test MAE: {test_mae:.3f}")
+    return test_rmse, test_mae
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Trains/evaluates NNMF models.')
     parser.add_argument('--model', type=str, choices=['NNMF', 'SVINNMF'], required=True)
     parser.add_argument('--mode', type=str, choices=['train', 'test'], required=True)
-    parser.add_argument('--train', type=str, default='C:/Users/xpati/Documents/TFG/ml-1m/split/u.data.train')
-    parser.add_argument('--valid', type=str, default='C:/Users/xpati/Documents/TFG/ml-1m/split/u.data.valid')
-    parser.add_argument('--test', type=str, default='C:/Users/xpati/Documents/TFG/ml-1m/split/u.data.test')
-    parser.add_argument('--users', type=int, default=6040)
-    parser.add_argument('--movies', type=int, default=3706)
+    parser.add_argument('--train', type=str, default='C:/Users/xpati/Documents/TFG/Netflix-Prize-Dataset/split/u.data.train')
+    parser.add_argument('--valid', type=str, default='C:/Users/xpati/Documents/TFG/Netflix-Prize-Dataset/split/u.data.valid')
+    parser.add_argument('--test', type=str, default='C:/Users/xpati/Documents/TFG/Netflix-Prize-Dataset/split/u.data.test')
+    parser.add_argument('--users', type=int, default=480189)
+    parser.add_argument('--movies', type=int, default=17770)
     parser.add_argument('--batch', type=int, default=1024)
     parser.add_argument('--max-epochs', type=int, default=50)
     parser.add_argument('--no-early', action='store_true')

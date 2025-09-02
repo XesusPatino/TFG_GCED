@@ -7,6 +7,7 @@ import tensorflow as tf
 import os
 import time
 import matplotlib.pyplot as plt
+import psutil
 from sklearn.preprocessing import StandardScaler, LabelEncoder # Import LabelEncoder
 from collections import defaultdict
 import random
@@ -33,7 +34,7 @@ config = {
     'display_step': 1,
     'test_size': 0.2,
     'random_state': 42,
-    'top_k_values': [5, 10, 20]  # Valores de K para las métricas Top-K
+    'top_k_values': [5, 10, 20, 50]  # Valores de K para las métricas Top-K
 }
 
 # Clase para seguimiento de emisiones por época
@@ -46,26 +47,51 @@ class EmissionsPerEpochTracker:
         self.epoch_rmse = []
         self.epoch_loss = []
         self.epoch_val_loss = []
-        self.epoch_recall = []
-        self.epoch_ndcg = []
+        self.epoch_recall = {}  # Dictionary to store recall for different k values
+        self.epoch_ndcg = {}    # Dictionary to store ndcg for different k values
+        self.epoch_times = []
+        self.epoch_memory = []
+        self.epoch_cpu = []
         self.total_emissions = 0.0
         self.trackers = {}
+        self.train_start_time = None
+        self.main_tracker = None
+        self.best_rmse = float('inf')
+        self.best_rmse_epoch = None
+        self.best_rmse_emissions = None
+        self.best_rmse_cumulative_emissions = None
+        self.best_rmse_metrics = None
+        
+        # Initialize recall and ndcg dictionaries for each k value
+        for k in config['top_k_values']:
+            self.epoch_recall[k] = []
+            self.epoch_ndcg[k] = []
         
         # Crear directorio para emisiones
         os.makedirs(f"{result_path}/emissions_reports", exist_ok=True)
         os.makedirs(f"{result_path}/emissions_plots", exist_ok=True)
-    
-    def start_epoch(self, epoch):
-        # Crear un tracker con un nombre único basado en timestamp
-        timestamp = int(time.time())
-        tracker_name = f"{self.model_name}_epoch{epoch}_{timestamp}"
         
-        self.trackers[epoch] = EmissionsTracker(
-            project_name=tracker_name,
+        # Inicializar tracker principal
+        self.main_tracker = EmissionsTracker(
+            project_name=f"{self.model_name}_training",
             output_dir=f"{self.result_path}/emissions_reports",
             save_to_file=True,
             log_level="error",
             save_to_api=False
+        )
+    
+    def start_epoch(self, epoch):
+        # Inicializar métricas del sistema para esta época
+        self.epoch_start_time = time.time()
+        
+        # Crear tracker individual para esta época con allow_multiple_runs
+        self.trackers[epoch] = EmissionsTracker(
+            project_name=f"{self.model_name}_epoch_{epoch}",
+            output_dir=f"{self.result_path}/emissions_reports",
+            save_to_file=True,
+            log_level="error",
+            save_to_api=False,
+            allow_multiple_runs=True
         )
         
         try:
@@ -74,7 +100,7 @@ class EmissionsPerEpochTracker:
             print(f"Advertencia: No se pudo iniciar el tracker para la época {epoch}: {e}")
             self.trackers[epoch] = None
     
-    def end_epoch(self, epoch, loss, val_loss=None, val_rmse=None, recall=None, ndcg=None):
+    def end_epoch(self, epoch, loss, val_loss=None, val_rmse=None, recall_dict=None, ndcg_dict=None):
         try:
             epoch_co2 = 0.0
             if epoch in self.trackers and self.trackers[epoch]:
@@ -84,6 +110,13 @@ class EmissionsPerEpochTracker:
                     print(f"Advertencia: Error al detener el tracker para la época {epoch}: {e}")
                     epoch_co2 = 0.0
             
+            # Calcular tiempo de época
+            epoch_time = time.time() - self.epoch_start_time
+            
+            # Obtener métricas del sistema
+            memory_usage = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2  # MB
+            cpu_usage = psutil.cpu_percent()
+            
             # Acumular emisiones totales
             self.total_emissions += epoch_co2
             
@@ -91,6 +124,9 @@ class EmissionsPerEpochTracker:
             self.epoch_emissions.append(epoch_co2)
             self.cumulative_emissions.append(self.total_emissions)
             self.epoch_loss.append(loss)
+            self.epoch_times.append(epoch_time)
+            self.epoch_memory.append(memory_usage)
+            self.epoch_cpu.append(cpu_usage)
             
             if val_loss is not None:
                 self.epoch_val_loss.append(val_loss)
@@ -98,22 +134,52 @@ class EmissionsPerEpochTracker:
             if val_rmse is not None:
                 self.epoch_rmse.append(val_rmse)
 
-            if recall is not None:
-                self.epoch_recall.append(recall)
+            # Store recall and ndcg for each k value
+            if recall_dict is not None:
+                for k in config['top_k_values']:
+                    if k in recall_dict:
+                        self.epoch_recall[k].append(recall_dict[k])
+                    else:
+                        self.epoch_recall[k].append(0.0)
 
-            if ndcg is not None:
-                self.epoch_ndcg.append(ndcg)
+            if ndcg_dict is not None:
+                for k in config['top_k_values']:
+                    if k in ndcg_dict:
+                        self.epoch_ndcg[k].append(ndcg_dict[k])
+                    else:
+                        self.epoch_ndcg[k].append(0.0)
             
-            print(f"Epoch {epoch+1} - Emisiones: {epoch_co2:.8f} kg, Acumulado: {self.total_emissions:.8f} kg")
-            print(f"Loss: {loss:.4f}, Val Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}")
-            if recall is not None and ndcg is not None:
-                print(f"Recall@{config['top_k_values'][0]}: {recall:.4f}, NDCG@{config['top_k_values'][0]}: {ndcg:.4f}")
+            # Rastrear el mejor RMSE y sus emisiones
+            if val_rmse is not None and val_rmse < self.best_rmse:
+                self.best_rmse = val_rmse
+                self.best_rmse_epoch = epoch
+                self.best_rmse_emissions = epoch_co2
+                self.best_rmse_cumulative_emissions = self.total_emissions
+                self.best_rmse_metrics = {
+                    'time': epoch_time,
+                    'memory': memory_usage,
+                    'cpu': cpu_usage
+                }
+            
+            # Create display string for metrics
+            recall_str = f"Recall@5={recall_dict.get(5, 0.0):.4f}, Recall@10={recall_dict.get(10, 0.0):.4f}" if recall_dict else ""
+            ndcg_str = f"NDCG@5={ndcg_dict.get(5, 0.0):.4f}, NDCG@10={ndcg_dict.get(10, 0.0):.4f}" if ndcg_dict else ""
+            
+            print(f"Epoch {epoch}: Time={epoch_time:.2f}s, Memory={memory_usage:.2f}MB, CPU={cpu_usage:.1f}%, RMSE={val_rmse:.4f}, {recall_str}, {ndcg_str}")
             
         except Exception as e:
             print(f"Error al medir emisiones en época {epoch}: {e}")
     
-    def end_training(self, final_rmse, final_recall=None, final_ndcg=None):
+    def end_training(self, final_rmse, final_recall_dict=None, final_ndcg_dict=None, total_training_time=None, test_time=None):
         try:
+            # Detener el tracker principal y obtener emisiones totales
+            total_emissions_main = 0.0
+            if self.main_tracker:
+                try:
+                    total_emissions_main = self.main_tracker.stop() or 0.0
+                except Exception as e:
+                    print(f"Error al detener el tracker principal: {e}")
+            
             # Asegurarse de que todos los trackers estén detenidos
             for epoch, tracker in self.trackers.items():
                 if tracker is not None:
@@ -122,20 +188,39 @@ class EmissionsPerEpochTracker:
                     except:
                         pass
             
+            # Usar las emisiones del tracker principal si están disponibles
+            if total_emissions_main > 0:
+                self.total_emissions = total_emissions_main
+                if len(self.cumulative_emissions) > 0:
+                    self.cumulative_emissions[-1] = total_emissions_main
+            
+            # Obtener métricas finales del sistema
+            final_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 ** 2  # MB
+            final_cpu = psutil.cpu_percent()
+            
             # Crear dataframe con todos los datos
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             epochs_range = range(1, len(self.epoch_emissions) + 1)
             
-            df = pd.DataFrame({
+            # Create base dataframe
+            df_data = {
                 'epoch': epochs_range,
                 'epoch_emissions_kg': self.epoch_emissions,
                 'cumulative_emissions_kg': self.cumulative_emissions,
                 'loss': self.epoch_loss,
                 'val_loss': self.epoch_val_loss if self.epoch_val_loss else [None] * len(self.epoch_emissions),
                 'rmse': self.epoch_rmse if self.epoch_rmse else [None] * len(self.epoch_emissions),
-                'recall': self.epoch_recall if self.epoch_recall else [None] * len(self.epoch_emissions),
-                'ndcg': self.epoch_ndcg if self.epoch_ndcg else [None] * len(self.epoch_emissions)
-            })
+                'time_sec': self.epoch_times,
+                'memory_mb': self.epoch_memory,
+                'cpu_percent': self.epoch_cpu
+            }
+            
+            # Add recall and ndcg for each k value
+            for k in config['top_k_values']:
+                df_data[f'recall@{k}'] = self.epoch_recall[k] if self.epoch_recall[k] else [None] * len(self.epoch_emissions)
+                df_data[f'ndcg@{k}'] = self.epoch_ndcg[k] if self.epoch_ndcg[k] else [None] * len(self.epoch_emissions)
+            
+            df = pd.DataFrame(df_data)
             
             # Crear carpetas si no existen
             os.makedirs(f"{self.result_path}/emissions_reports", exist_ok=True)
@@ -145,8 +230,53 @@ class EmissionsPerEpochTracker:
             df.to_csv(emissions_file, index=False)
             print(f"Métricas de emisiones guardadas en: {emissions_file}")
             
+            # Imprimir resumen final como el solicitado
+            print("\n=== Final Training Metrics ===")
+            for i, row in df.iterrows():
+                recall5 = row.get('recall@5', 0.0) or 0.0
+                recall10 = row.get('recall@10', 0.0) or 0.0
+                ndcg5 = row.get('ndcg@5', 0.0) or 0.0
+                ndcg10 = row.get('ndcg@10', 0.0) or 0.0
+                
+                print(f"Epoch {int(row['epoch'])-1}: Time={row['time_sec']:.2f}s, "
+                      f"Memory={row['memory_mb']:.2f}MB, CPU={row['cpu_percent']:.1f}%, "
+                      f"RMSE={row['rmse']:.4f}, Recall@5={recall5:.4f}, Recall@10={recall10:.4f}, "
+                      f"NDCG@5={ndcg5:.4f}, NDCG@10={ndcg10:.4f}")
+            
+            print("\n=== Final Test Metrics ===")
+            if total_training_time and test_time:
+                print(f"Total Time: {total_training_time:.2f}s (Test: {test_time:.2f}s)")
+            print(f"Final Memory: {final_memory:.2f}MB")
+            print(f"Final CPU: {final_cpu:.1f}%")
+            print(f"RMSE: {final_rmse:.4f}")
+            
+            # Print final recall and ndcg metrics
+            if final_recall_dict:
+                for k in config['top_k_values']:
+                    if k in final_recall_dict:
+                        print(f"Recall@{k}: {final_recall_dict[k]:.4f}")
+            
+            if final_ndcg_dict:
+                for k in config['top_k_values']:
+                    if k in final_ndcg_dict:
+                        print(f"NDCG@{k}: {final_ndcg_dict[k]:.4f}")
+            
+            # Mostrar información del mejor RMSE durante el entrenamiento
+            if self.best_rmse_epoch is not None:
+                print(f"\n=== Best Training RMSE ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                if self.best_rmse_metrics:
+                    print(f"Time: {self.best_rmse_metrics['time']:.2f}s")
+                    print(f"Memory: {self.best_rmse_metrics['memory']:.2f}MB")
+                    print(f"CPU: {self.best_rmse_metrics['cpu']:.1f}%")
+                
+                print(f"\n=== Best RMSE and Associated Emissions ===")
+                print(f"Best RMSE: {self.best_rmse:.4f} (Epoch {self.best_rmse_epoch})")
+                print(f"Emissions at best RMSE: {self.best_rmse_emissions:.8f} kg")
+                print(f"Cumulative emissions at best RMSE: {self.best_rmse_cumulative_emissions:.8f} kg")
+            
             # Graficar las relaciones
-            self.plot_emissions_vs_metrics(epochs_range, timestamp, final_rmse, final_recall, final_ndcg)
+            self.plot_emissions_vs_metrics(epochs_range, timestamp, final_rmse)
             
         except Exception as e:
             print(f"Error al generar gráficos de emisiones: {e}")
@@ -285,9 +415,13 @@ if 'UID' in X_users.columns and 'UID' in data.columns:
 else:
     raise KeyError("La columna 'UID' no está presente en ambos DataFrames.")
 
-# 4. Label encoding de user y movie IDs
+# 4. Label encoding de user y movie IDs y guardar IDs originales
 user_encoder = LabelEncoder()
 movie_encoder = LabelEncoder()
+
+# Guardar IDs originales antes de la codificación
+original_user_ids = data['UID'].copy()
+original_movie_ids = data['MID'].copy()
 
 data['UID'] = user_encoder.fit_transform(data['UID'])
 data['MID'] = movie_encoder.fit_transform(data['MID'])
@@ -302,18 +436,19 @@ print(f'Number of movies: {n_movies}')
 # 5. Dividir los datos en entrenamiento y prueba
 X = data.drop('rate', axis=1)  # Características
 y = data['rate']               # Etiquetas (ratings)
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# También necesitamos los IDs originales para las métricas Top-K
+original_user_ids_series = original_user_ids.reset_index(drop=True)
+original_movie_ids_series = original_movie_ids.reset_index(drop=True)
+
+X_train, X_test, y_train, y_test, user_ids_train, user_ids_test, movie_ids_train, movie_ids_test = train_test_split(
+    X, y, original_user_ids_series, original_movie_ids_series, test_size=0.2, random_state=42
+)
 
 # 6. Normalizar características numéricas
 scaler = StandardScaler()
 X_train_scaled = scaler.fit_transform(X_train)
 X_test_scaled = scaler.transform(X_test)
-
-# Convertir a tensores de TensorFlow
-X_train_scaled = tf.convert_to_tensor(X_train_scaled, dtype=tf.float32)
-X_test_scaled = tf.convert_to_tensor(X_test_scaled, dtype=tf.float32)
-y_train = tf.convert_to_tensor(y_train.values, dtype=tf.float32)
-y_test = tf.convert_to_tensor(y_test.values, dtype=tf.float32)
 
 # 7. Construir modelo híbrido con TensorFlow/Keras
 input_layer = Input(shape=(X_train_scaled.shape[1],))
@@ -344,147 +479,193 @@ model.compile(loss='mse', optimizer='adam', metrics=['mae'])
 # 8. Preparar el tracking de emisiones por época
 emissions_tracker = EmissionsPerEpochTracker(result_path)
 
+# 9. Define una clase personalizada para TrackingCallback
+class TrackingCallback(tf.keras.callbacks.Callback):
+    def __init__(self, val_data, val_user_ids, val_movie_ids, emissions_tracker):
+        super().__init__()
+        self.val_data = val_data
+        self.val_user_ids = val_user_ids
+        self.val_movie_ids = val_movie_ids
+        self.emissions_tracker = emissions_tracker
+        self.val_X, self.val_y = val_data
+        
+    def on_train_begin(self, logs=None):
+        self.emissions_tracker.train_start_time = time.time()
+        # Iniciar el tracker principal
+        try:
+            self.emissions_tracker.main_tracker.start()
+            print("Tracker principal de emisiones iniciado")
+        except Exception as e:
+            print(f"Advertencia: No se pudo iniciar el tracker principal: {e}")
+            self.emissions_tracker.main_tracker = None
+        
+    def on_epoch_begin(self, epoch, logs=None):
+        self.emissions_tracker.start_epoch(epoch)
+        
+    def on_epoch_end(self, epoch, logs=None):
+        # Calcular RMSE en el conjunto de validación
+        y_pred = self.model.predict(self.val_X, verbose=0)
+        val_rmse = mean_squared_error(self.val_y, y_pred.flatten(), squared=False)
+        
+        # Calcular métricas Top-K
+        recall_dict, ndcg_dict = calculate_all_topk_metrics(
+            self.model, self.val_X, self.val_y, 
+            self.val_user_ids, self.val_movie_ids, 
+            config['top_k_values']
+        )
+        
+        # Registrar métricas y emisiones
+        self.emissions_tracker.end_epoch(
+            epoch, 
+            logs.get('loss'), 
+            logs.get('val_loss'),
+            val_rmse,
+            recall_dict,
+            ndcg_dict
+        )
+
 # 9. Métricas Top-K
-def calculate_topk_metrics(model, X, y, k=5):
-    """Calcula Recall@K y NDCG@K."""
-
-    # Hacer predicciones para todos los pares usuario-ítem en X
-    y_pred = model.predict(X).flatten()
-
-    # Crear un DataFrame con las predicciones y los valores reales
-    df = pd.DataFrame({'y_true': y.numpy(), 'y_pred': y_pred})
-
-    # Agrupar por usuario y ordenar las predicciones
-    df['UID'] = X[:, 0]  # Asumiendo que la primera columna de X es el ID de usuario
-    df = df.groupby('UID').apply(lambda x: x.sort_values('y_pred', ascending=False))
-
-    # Calcular Recall@K y NDCG@K para cada usuario
-    recall_sum = 0
-    ndcg_sum = 0
-    num_users = len(df.index.levels[0])  # Número de usuarios únicos
-
-    for user_id in df.index.levels[0]:
-        user_data = df.loc[user_id]
+def calculate_topk_metrics(model, X_test_scaled, y_test, user_ids, movie_ids, k=5):
+    """Calcula Recall@K y NDCG@K correctamente."""
+    try:
+        # Hacer predicciones para todos los pares usuario-ítem en X_test
+        y_pred = model.predict(X_test_scaled, verbose=0).flatten()
         
-        # Convertir y_true a un conjunto de elementos relevantes (rating >= 4)
-        relevant_items = set(np.where(user_data['y_true'].values >= 4)[0])
+        # Crear un DataFrame con las predicciones, valores reales y IDs
+        df = pd.DataFrame({
+            'user_id': user_ids,
+            'movie_id': movie_ids,
+            'y_true': y_test.numpy() if hasattr(y_test, 'numpy') else y_test,
+            'y_pred': y_pred
+        })
         
-        # Obtener los índices de los top-k ítems predichos
-        top_k_indices = user_data.index.values[:k]
+        # Calcular Recall@K y NDCG@K para cada usuario
+        recall_sum = 0
+        ndcg_sum = 0
+        num_users = 0
         
-        # Calcular hits
-        hits = len(set(top_k_indices) & relevant_items)
+        for user_id in df['user_id'].unique():
+            user_data = df[df['user_id'] == user_id].copy()
+            
+            if len(user_data) == 0:
+                continue
+                
+            # Ordenar por predicción descendente
+            user_data = user_data.sort_values('y_pred', ascending=False)
+            
+            # Definir elementos relevantes (rating >= 4)
+            relevant_items = set(user_data[user_data['y_true'] >= 4]['movie_id'].values)
+            
+            if len(relevant_items) == 0:
+                continue
+                
+            # Obtener los top-k ítems predichos
+            top_k_items = set(user_data.head(k)['movie_id'].values)
+            
+            # Calcular hits (intersección entre top-k y relevantes)
+            hits = len(top_k_items & relevant_items)
+            
+            # Calcular Recall@K
+            recall = hits / len(relevant_items) if relevant_items else 0.0
+            recall_sum += recall
+            
+            # Calcular NDCG@K
+            dcg = 0.0
+            top_k_list = user_data.head(k)['movie_id'].values
+            
+            for i, item_id in enumerate(top_k_list):
+                if item_id in relevant_items:
+                    dcg += 1.0 / np.log2(i + 2)  # i+2 porque log2(1) = 0
+            
+            # Calcular IDCG (Ideal DCG)
+            idcg = sum(1.0 / np.log2(i + 2) for i in range(min(len(relevant_items), k)))
+            
+            # Calcular NDCG
+            ndcg = dcg / idcg if idcg > 0 else 0.0
+            ndcg_sum += ndcg
+            
+            num_users += 1
         
-        # Calcular Recall@K
-        recall = hits / len(relevant_items) if relevant_items else 0.0
-        recall_sum += recall
+        # Promediar Recall@K y NDCG@K sobre todos los usuarios
+        recall = recall_sum / num_users if num_users > 0 else 0.0
+        ndcg = ndcg_sum / num_users if num_users > 0 else 0.0
         
-        # Calcular NDCG@K
-        dcg = 0.0
-        for i, item in enumerate(top_k_indices):
-            if item in relevant_items:
-                dcg += 1.0 / np.log2(i + 2)
+        return recall, ndcg
         
-        idcg = sum(1.0 / np.log2(i + 2) for i in range(min(len(relevant_items), k)))
-        ndcg = dcg / idcg if idcg > 0 else 0.0
-        ndcg_sum += ndcg
+    except Exception as e:
+        print(f"Error calculating Top-K metrics: {e}")
+        return 0.0, 0.0
 
-    # Promediar Recall@K y NDCG@K sobre todos los usuarios
-    recall = recall_sum / num_users if num_users > 0 else 0.0
-    ndcg = ndcg_sum / num_users if num_users > 0 else 0.0
+def calculate_all_topk_metrics(model, X_test_scaled, y_test, user_ids, movie_ids, k_values):
+    """Calcula Recall@K y NDCG@K para múltiples valores de K."""
+    recall_dict = {}
+    ndcg_dict = {}
+    
+    for k in k_values:
+        recall, ndcg = calculate_topk_metrics(model, X_test_scaled, y_test, user_ids, movie_ids, k)
+        recall_dict[k] = recall
+        ndcg_dict[k] = ndcg
+    
+    return recall_dict, ndcg_dict
 
-    return recall, ndcg
+# 10. Dividir los datos de entrenamiento para validación
+X_train_part, X_val, y_train_part, y_val, user_ids_train_part, user_ids_val, movie_ids_train_part, movie_ids_val = train_test_split(
+    X_train_scaled, y_train, user_ids_train, movie_ids_train, test_size=0.1, random_state=42
+)
 
-# 10. Entrenar el modelo
+# 11. Crear el callback de tracking
+tracking_callback = TrackingCallback((X_val, y_val), user_ids_val, movie_ids_val, emissions_tracker)
+
+# 12. Entrenar con epochs y tracking
 print("Iniciando entrenamiento del modelo...")
-batch_size = config['batch_size']
-epochs = config['epochs']
+history = model.fit(
+    X_train_part, y_train_part,
+    epochs=config['epochs'],
+    batch_size=config['batch_size'],
+    validation_data=(X_val, y_val),
+    verbose=1,
+    callbacks=[tracking_callback]
+)
 
-# Mejorar la historia del entrenamiento
-history = {"loss": [], "val_loss": [], "val_rmse": [], "recall": [], "ndcg": []}
-
-for epoch in range(epochs):
-    emissions_tracker.start_epoch(epoch)
-    
-    # Entrenar una época completa
-    history_callback = model.fit(
-        X_train_scaled, y_train,
-        batch_size=batch_size,
-        epochs=1,
-        verbose=0,
-        validation_data=(X_test_scaled, y_test)
-    )
-    
-    # Obtener métricas de la época
-    train_loss = history_callback.history['loss'][0]
-    val_loss = history_callback.history['val_loss'][0]
-    
-    # Guardar métricas en el historial
-    history["loss"].append(train_loss)
-    history["val_loss"].append(val_loss)
-    
-    # Calcular RMSE en el conjunto de validación
-    y_pred_val = model.predict(X_test_scaled, verbose=0)
-    val_rmse = mean_squared_error(y_test.numpy(), y_pred_val.flatten(), squared=False)
-    history["val_rmse"].append(val_rmse)
-    
-    # Calcular Recall@K y NDCG@K en el conjunto de validación
-    recall, ndcg = calculate_topk_metrics(model, X_test_scaled, y_test, k=config['top_k_values'][0])
-    history["recall"].append(recall)
-    history["ndcg"].append(ndcg)
-
-    # Registrar métricas y emisiones
-    emissions_tracker.end_epoch(
-        epoch,
-        train_loss,
-        val_loss=val_loss,
-        val_rmse=val_rmse,
-        recall=recall,
-        ndcg=ndcg
-    )
-    
-    # Mostrar progreso
-    if (epoch + 1) % config['display_step'] == 0:
-        print(f"Epoch {epoch + 1}/{epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val RMSE: {val_rmse:.4f}")
-        print(f"Recall@{config['top_k_values'][0]}: {recall:.4f}, NDCG@{config['top_k_values'][0]}: {ndcg:.4f}")
-
-# 11. Evaluar el modelo final
+# 13. Evaluar el modelo final
 print("Realizando predicciones finales...")
+test_start_time = time.time()
 y_pred = model.predict(X_test_scaled, verbose=0)
+test_time = time.time() - test_start_time
 
-# 12. Evaluar el modelo con métricas finales
-rmse = mean_squared_error(y_test.numpy(), y_pred.flatten(), squared=False)
-mae = mean_absolute_error(y_test.numpy(), y_pred.flatten())
-r2 = r2_score(y_test.numpy(), y_pred.flatten())
+# Calcular tiempo total de entrenamiento
+total_training_time = time.time() - emissions_tracker.train_start_time
+
+# 14. Evaluar el modelo con métricas finales
+rmse = mean_squared_error(y_test, y_pred.flatten(), squared=False)
+r2 = r2_score(y_test, y_pred.flatten())
 
 print(f"RMSE final: {rmse}")
-print(f"MAE final: {mae}")
 print(f"R² final: {r2}")
 
-# 13. Calcular métricas de ranking finales
-final_metrics = {}
+# 15. Calcular métricas de ranking finales
+final_recall_dict, final_ndcg_dict = calculate_all_topk_metrics(
+    model, X_test_scaled, y_test, user_ids_test, movie_ids_test, config['top_k_values']
+)
+
 for k in config['top_k_values']:
-    recall, ndcg = calculate_topk_metrics(model, X_test_scaled, y_test, k=k)
-    final_metrics[f'recall@{k}'] = recall
-    final_metrics[f'ndcg@{k}'] = ndcg
-    print(f"Recall@{k} final: {recall:.4f}")
-    print(f"NDCG@{k} final: {ndcg:.4f}")
+    print(f"Recall@{k} final: {final_recall_dict[k]:.4f}")
+    print(f"NDCG@{k} final: {final_ndcg_dict[k]:.4f}")
 
-# 14. Generar gráficos finales de emisiones vs. rendimiento
-emissions_tracker.end_training(rmse, final_metrics[f'recall@{config["top_k_values"][0]}'], final_metrics[f'ndcg@{config["top_k_values"][0]}'])
+# 16. Generar gráficos finales de emisiones vs. rendimiento
+emissions_tracker.end_training(rmse, final_recall_dict, final_ndcg_dict, total_training_time, test_time)
 
-# 15. Guardar resultados finales en un CSV
+# 17. Guardar resultados finales en un CSV
 timestamp = time.strftime("%Y%m%d-%H%M%S")
 final_results = {
     'final_rmse': [rmse],
-    'final_mae': [mae],
     'final_r2': [r2],
 }
 
 # Añadir todas las métricas de ranking
 for k in config['top_k_values']:
-    final_results[f'final_recall@{k}'] = [final_metrics[f'recall@{k}']]
-    final_results[f'final_ndcg@{k}'] = [final_metrics[f'ndcg@{k}']]
+    final_results[f'final_recall@{k}'] = [final_recall_dict[k]]
+    final_results[f'final_ndcg@{k}'] = [final_ndcg_dict[k]]
 
 final_results_df = pd.DataFrame(final_results)
 final_results_file = f"{result_path}/final_results_{timestamp}.csv"

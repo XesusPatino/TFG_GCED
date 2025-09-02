@@ -1,0 +1,2 @@
+model,final_rmse,final_mae,total_emissions_kg,total_time_seconds,test_time_seconds,average_cpu_percent,final_cpu_percent,memory_usage_mb
+LRML,1.2857292615749836,1.2590947427020895,0.00031742444072479744,361.6406705379486,0.07497739791870117,5.291999999999999,1.4,402.76171875

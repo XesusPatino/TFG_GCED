@@ -16,7 +16,7 @@ except ImportError:
     print("Warning: matplotlib module not found. Graphs will not be generated.")
     print("Please install using: pip install matplotlib")
 
-np.random.seed(555)
+np.random.seed(24)
 
 parser = argparse.ArgumentParser()
 

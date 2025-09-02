@@ -1,6 +1,6 @@
 from typing import Literal
 import torch
-from torchmetrics import MeanSquaredError
+from torchmetrics import MeanSquaredError, MeanAbsoluteError
 from pytorch_lightning import LightningModule
 from torch.nn import Embedding, Parameter
 import fairness_metrics
@@ -36,6 +36,11 @@ class CollaborativeFilteringModel(LightningModule):
         self.train_rmse = MeanSquaredError(squared=False)
         self.val_rmse = MeanSquaredError(squared=False)
         self.test_rmse = MeanSquaredError(squared=False)
+
+        # Initialize MAE metrics
+        self.train_mae = MeanAbsoluteError()
+        self.val_mae = MeanAbsoluteError()
+        self.test_mae = MeanAbsoluteError()
 
         self.val_rmse_male = MeanSquaredError(squared=False)
         self.val_rmse_female = MeanSquaredError(squared=False)
@@ -95,7 +100,9 @@ class CollaborativeFilteringModel(LightningModule):
         loss = mse_losses.mean() + self._l2(user_ids, item_ids, gender) + eo_loss
 
         self.train_rmse.update(self._clamp_ratings(rating_pred), ratings)
+        self.train_mae.update(self._clamp_ratings(rating_pred), ratings)
         self.log("train_rmse", self.train_rmse, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train_mae", self.train_mae, on_step=False, on_epoch=True, prog_bar=True)
 
         self.train_eo.update(ratings, self._clamp_ratings(rating_pred), gender)
         self.log("train_eo", self.train_eo, on_step=False, on_epoch=True, prog_bar=True)
@@ -126,6 +133,7 @@ class CollaborativeFilteringModel(LightningModule):
 
         # Calcular RMSE global
         self.val_rmse.update(self._clamp_ratings(rating_pred), ratings)
+        self.val_mae.update(self._clamp_ratings(rating_pred), ratings)
         
         # Calcular RMSE para hombres
         if len(male_idx[0]) > 0:
@@ -143,6 +151,7 @@ class CollaborativeFilteringModel(LightningModule):
 
         # Loggear métricas
         self.log("val_rmse", self.val_rmse, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_mae", self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         
         if len(male_idx[0]) > 0:
             self.log("val_rmse_male", self.val_rmse_male, on_step=False, on_epoch=True, prog_bar=True)
@@ -160,7 +169,9 @@ class CollaborativeFilteringModel(LightningModule):
         rating_pred = self(user_ids, item_ids, gender)
 
         self.test_rmse.update(self._clamp_ratings(rating_pred), ratings)
+        self.test_mae.update(self._clamp_ratings(rating_pred), ratings)
         self.log("test_rmse", self.test_rmse, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("test_mae", self.test_mae, on_step=False, on_epoch=True, prog_bar=True)
 
         # Only log these if the metrics exist
         if hasattr(self, 'test_eoi'):

@@ -2,7 +2,7 @@ from typing import Literal, Dict, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchmetrics import MeanSquaredError
+from torchmetrics import MeanSquaredError, MeanAbsoluteError
 from pytorch_lightning import LightningModule
 import fairness_metrics
 from data import datamodule
@@ -53,6 +53,8 @@ class CollaborativeFilteringModel(LightningModule):
         # Métricas
         self.train_rmse = MeanSquaredError(squared=False)
         self.val_rmse = MeanSquaredError(squared=False)
+        self.train_mae = MeanAbsoluteError()
+        self.val_mae = MeanAbsoluteError()
         
         # Métricas de fairness
         self.train_eo = fairness_metrics.EqualOpportunity(max_items=self.max_items)
@@ -177,7 +179,9 @@ class CollaborativeFilteringModel(LightningModule):
         user_ids, item_ids, ratings, gender = batch
         prediction = self(user_ids, item_ids)
         
-        # Actualizar métrica de fairness
+        # Actualizar métricas
+        self.train_rmse.update(prediction, ratings)
+        self.train_mae.update(prediction, ratings)
         self.train_eo.update(ratings, prediction.unsqueeze(1), gender)
         
         # Calcular pérdida
@@ -190,7 +194,11 @@ class CollaborativeFilteringModel(LightningModule):
         
         total_loss = mse_loss + reg_loss + 0.1 * fairness_loss
         
+        # Log métricas
         self.log("train_loss", total_loss, on_step=False, on_epoch=True)
+        self.log("train_rmse", self.train_rmse, on_step=False, on_epoch=True)
+        self.log("train_mae", self.train_mae, on_step=False, on_epoch=True)
+        
         return total_loss
     
     def validation_step(self, batch, batch_idx):
@@ -203,10 +211,17 @@ class CollaborativeFilteringModel(LightningModule):
         if prediction.dim() == 1:
             prediction = prediction.unsqueeze(1)
         
-        # Calculate metrics
+        # Update metrics
+        self.val_rmse.update(prediction.squeeze(), ratings)
+        self.val_mae.update(prediction.squeeze(), ratings)
+        
+        # Calculate and log metrics
         mse = F.mse_loss(prediction.squeeze(), ratings)
         rmse = torch.sqrt(mse)
-        self.log("val_rmse", rmse, on_step=False, on_epoch=True, prog_bar=True)
+        mae = F.l1_loss(prediction.squeeze(), ratings)
+        
+        self.log("val_rmse", self.val_rmse, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val_mae", self.val_mae, on_step=False, on_epoch=True, prog_bar=True)
         
         # Return a dictionary with data for callbacks
         return {
