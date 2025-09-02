@@ -1,0 +1,2 @@
+*.ckpt filter=lfs diff=lfs merge=lfs -text
+Modelos/FAIR_MF/Modelo[[:space:]]GDSC1/models/MF/checkpoints/GDSC1/split_0/best-model-32.ckpt filter=lfs diff=lfs merge=lfs -text
