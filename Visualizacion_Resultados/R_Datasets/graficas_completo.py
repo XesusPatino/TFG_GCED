@@ -6,13 +6,9 @@ import os
 from pathlib import Path
 import re
 
-# Configurar el estilo para gráficos profesionales
+# Configurar el estilo
 plt.style.use('default')
 sns.set_palette("husl")
-
-# =============================================================================
-# CONFIGURACIÓN - Modifica esta sección según tus necesidades
-# =============================================================================
 
 # Opción 1: Lista específica de archivos con nombres personalizados
 files_config = [

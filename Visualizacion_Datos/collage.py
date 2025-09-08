@@ -2,7 +2,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+
 # --- 1. Carga y Preparación de Datos ---
+
 # Leer el archivo con delimitador :: y sin encabezados
 try:
     df = pd.read_csv("ratings.csv", 
@@ -21,7 +23,9 @@ df.rename(columns={
     'item_id': 'itemId'
 }, inplace=True)
 
+
 # --- 2. Estadísticas Generales ---
+
 n_users = df['userId'].nunique()
 n_items = df['itemId'].nunique()
 n_ratings = df.shape[0]
@@ -40,22 +44,22 @@ print(f"Rating máximo: {max_rating:.2f}")
 print(f"Densidad de la matriz: {density:.4f}% (muy dispersa, como es habitual)")
 print("-" * 50)
 
+
 # --- 3. Visualizaciones en Collage ---
 
 # Configuración de estilo visual para todas las gráficas
 sns.set_theme(style="whitegrid", palette="pastel")
 plt.rcParams.update({
-    'axes.titlesize': 14,
-    'axes.labelsize': 12,
-    'xtick.labelsize': 10,
-    'ytick.labelsize': 10,
+    'axes.titlesize': 20,      
+    'axes.labelsize': 18,     
+    'xtick.labelsize': 16,    
+    'ytick.labelsize': 16,     
     'figure.titlesize': 18,
     'figure.titleweight': 'bold'
 })
 
 # Crear figura con subplots (2x2)
 fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-fig.suptitle('Análisis Exploratorio del Dataset de Ratings', fontsize=20, fontweight='bold', y=0.98)
 
 # Gráfica 1: Distribución de las Valoraciones (Ratings)
 sns.histplot(data=df, x='rating', bins=30, color='purple', ax=axes[0, 0])
@@ -98,8 +102,7 @@ axes[1, 1].legend()
 
 # Ajustar espaciado entre subplots
 plt.tight_layout()
-plt.subplots_adjust(top=0.94)
 
 # Guardar el collage
-plt.savefig('ratings_analisis_exploratorio.png', dpi=300, bbox_inches='tight')
+plt.savefig('movielens_analisis_exploratorio.png', dpi=300, bbox_inches='tight')
 plt.show()
